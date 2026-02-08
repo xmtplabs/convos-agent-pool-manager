@@ -162,7 +162,25 @@ export async function provision(agentId, instructions) {
   };
 }
 
-// Kill a claimed instance — delete from Railway and remove from DB.
+// Drain idle instances from the pool — delete from Railway and remove from DB.
+export async function drainPool(count) {
+  const idle = await db.listIdle(count);
+  console.log(`[pool] Draining ${idle.length} idle instance(s)...`);
+  const results = [];
+  for (const inst of idle) {
+    try {
+      await railway.deleteService(inst.railway_service_id);
+      await db.deleteInstance(inst.id);
+      results.push(inst.id);
+      console.log(`[pool]   Drained ${inst.id}`);
+    } catch (err) {
+      console.error(`[pool]   Failed to drain ${inst.id}:`, err.message);
+    }
+  }
+  return results;
+}
+
+// Kill a launched instance — delete from Railway and remove from DB.
 export async function killInstance(id) {
   const instances = await db.listAll();
   const inst = instances.find((i) => i.id === id);

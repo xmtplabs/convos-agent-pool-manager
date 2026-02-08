@@ -148,6 +148,7 @@ app.get("/", (_req, res) => {
 
     .pool-stat.ready .dot { background: #34C759; }
     .pool-stat.starting .dot { background: #FF9500; }
+    .pool-stat.claimed .dot { background: #007AFF; }
 
     .pool-bar-right {
       display: flex;
@@ -463,6 +464,7 @@ app.get("/", (_req, res) => {
         <span class="pool-bar-label">Pool</span>
         <div class="pool-stat ready"><span class="dot"></span><span id="s-idle">-</span> ready</div>
         <div class="pool-stat starting"><span class="dot"></span><span id="s-prov">-</span> starting</div>
+        <div class="pool-stat claimed"><span class="dot"></span><span id="s-alloc">-</span> claimed</div>
       </div>
       <div class="pool-bar-right">
         <input id="replenish-count" type="number" min="1" max="20" value="3" />
@@ -533,7 +535,7 @@ app.get("/", (_req, res) => {
     }
 
     // Pool status
-    const sIdle=document.getElementById('s-idle'),sProv=document.getElementById('s-prov');
+    const sIdle=document.getElementById('s-idle'),sProv=document.getElementById('s-prov'),sAlloc=document.getElementById('s-alloc');
     const unavail=document.getElementById('unavailable'),btn=document.getElementById('btn');
     const liveCount=document.getElementById('live-count');
     let launching=false;
@@ -542,7 +544,7 @@ app.get("/", (_req, res) => {
       try{
         var res=await fetch('/api/pool/counts');
         var c=await res.json();
-        sIdle.textContent=c.idle;sProv.textContent=c.provisioning;
+        sIdle.textContent=c.idle;sProv.textContent=c.provisioning;sAlloc.textContent=c.claimed;
         if(!launching){
           if(c.idle>0){btn.disabled=false;unavail.style.display='none'}
           else{btn.disabled=true;unavail.style.display='block'}
@@ -683,18 +685,21 @@ app.get("/", (_req, res) => {
       }finally{replenishBtn.disabled=false;replenishBtn.textContent='+ Add';}
     };
 
-    // Drain — kill all live agents in parallel
-    document.getElementById('drain-btn').onclick=async function(){
-      if(!agentsCache.length){alert('No live agents to drain.');return;}
-      if(!confirm('Drain all '+agentsCache.length+' live agents? This will destroy their Railway services permanently.'))return;
-      this.disabled=true;this.textContent='Draining...';
-      var ids=agentsCache.map(function(a){return a.id;});
-      ids.forEach(markDestroying);
-      var results=await Promise.allSettled(ids.map(killOne));
-      var failed=results.filter(function(r){return r.status==='rejected';});
-      if(failed.length)alert(failed.length+' agent(s) failed to drain.');
-      refreshFeed();refreshStatus();
-      this.disabled=false;this.textContent='Drain';
+    // Drain — remove idle instances from the pool
+    var drainBtn=document.getElementById('drain-btn');
+    drainBtn.onclick=async function(){
+      var n=parseInt(replenishCount.value)||3;
+      drainBtn.disabled=true;drainBtn.textContent='Draining...';
+      try{
+        var res=await fetch('/api/pool/drain',{method:'POST',headers:authHeaders,
+          body:JSON.stringify({count:n})
+        });
+        var data=await res.json();
+        if(!res.ok)throw new Error(data.error||'Failed');
+        refreshStatus();
+      }catch(err){
+        alert('Failed to drain pool: '+err.message);
+      }finally{drainBtn.disabled=false;drainBtn.textContent='Drain';}
     };
 
     // Initial load + polling
@@ -776,6 +781,19 @@ app.post("/api/pool/replenish", requireAuth, async (req, res) => {
     const counts = await db.countByStatus();
     res.json({ ok: true, counts });
   } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Drain idle instances from the pool
+app.post("/api/pool/drain", requireAuth, async (req, res) => {
+  try {
+    const count = Math.min(parseInt(req.body?.count) || 1, 20);
+    const drained = await pool.drainPool(count);
+    const counts = await db.countByStatus();
+    res.json({ ok: true, drained: drained.length, counts });
+  } catch (err) {
+    console.error("[api] Drain failed:", err);
     res.status(500).json({ error: err.message });
   }
 });
