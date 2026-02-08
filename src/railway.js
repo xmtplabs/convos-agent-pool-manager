@@ -33,8 +33,7 @@ export async function createService(name) {
       input: {
         projectId,
         name,
-        source: { repo },
-        branch,
+        source: { repo, branch },
       },
     }
   );
