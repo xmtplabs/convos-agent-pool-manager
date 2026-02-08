@@ -140,9 +140,17 @@ export async function provision(conciergeId, instructions) {
     conversationId: result.conversationId,
   });
 
+  // 4. Rename the Railway service so it's identifiable in the dashboard
+  try {
+    await railway.renameService(instance.railway_service_id, `concierge-${conciergeId}`);
+    console.log(`[pool] Renamed ${instance.id} → concierge-${conciergeId}`);
+  } catch (err) {
+    console.warn(`[pool] Failed to rename ${instance.id}:`, err.message);
+  }
+
   console.log(`[pool] Provisioned ${instance.id}: ${result.inviteUrl}`);
 
-  // 4. Trigger backfill (don't await — fire and forget)
+  // 5. Trigger backfill (don't await — fire and forget)
   replenish().catch((err) => console.error("[pool] Backfill error:", err));
 
   return {
