@@ -124,7 +124,7 @@ export async function provision(agentId, instructions) {
       Authorization: `Bearer ${POOL_API_KEY}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ instructions }),
+    body: JSON.stringify({ instructions, name: agentId }),
   });
 
   if (!res.ok) {
