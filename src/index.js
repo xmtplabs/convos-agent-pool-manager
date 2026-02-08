@@ -43,22 +43,12 @@ app.get("/api/pool/agents", async (_req, res) => {
   }
 });
 
-// Kill all claimed instances
+// Kill all claimed instances (returns list of IDs so frontend can track)
 app.delete("/api/pool/instances", requireAuth, async (_req, res) => {
   try {
     const agents = await db.listClaimed();
-    let killed = 0;
-    for (const a of agents) {
-      try {
-        await pool.killInstance(a.id);
-        killed++;
-      } catch (err) {
-        console.error(`[api] Failed to kill ${a.id}:`, err.message);
-      }
-    }
-    res.json({ ok: true, killed });
+    res.json({ ids: agents.map((a) => a.id) });
   } catch (err) {
-    console.error("[api] Kill all failed:", err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -306,6 +296,25 @@ app.get("/", (_req, res) => {
       gap: 8px;
     }
 
+    .agent-card.destroying {
+      opacity: 0.5;
+      pointer-events: none;
+      position: relative;
+    }
+
+    .agent-card.destroying .agent-uptime {
+      color: #DC2626;
+    }
+
+    @keyframes destroyPulse {
+      0%, 100% { opacity: 0.5; }
+      50% { opacity: 0.3; }
+    }
+
+    .agent-card.destroying {
+      animation: destroyPulse 1.5s ease-in-out infinite;
+    }
+
     /* QR modal */
     .modal-overlay {
       display: none;
@@ -528,19 +537,35 @@ app.get("/", (_req, res) => {
     function closeModal(){modal.classList.remove('active');}
     modal.onclick=function(e){if(e.target===modal)closeModal();};
 
-    // Kill agent
+    // Kill single agent
+    function markDestroying(id){
+      var card=document.getElementById('agent-'+id);
+      if(card){
+        card.classList.add('destroying');
+        var uptime=card.querySelector('.agent-uptime');
+        if(uptime)uptime.textContent='Destroying...';
+      }
+    }
+
+    async function killOne(id){
+      markDestroying(id);
+      var res=await fetch('/api/pool/instances/'+id,{method:'DELETE',headers:authHeaders});
+      var data=await res.json();
+      if(!res.ok)throw new Error(data.error||'Kill failed');
+      var card=document.getElementById('agent-'+id);
+      if(card)card.remove();
+      return id;
+    }
+
     async function killAgent(id,name){
       if(!confirm('Are you sure you want to kill "'+name+'"? This will delete the Railway service permanently.'))return;
-      var card=document.getElementById('agent-'+id);
-      if(card)card.style.opacity='0.5';
       try{
-        var res=await fetch('/api/pool/instances/'+id,{method:'DELETE',headers:authHeaders});
-        var data=await res.json();
-        if(!res.ok)throw new Error(data.error||'Kill failed');
-        refreshFeed();refreshStatus();
+        await killOne(id);
+        refreshStatus();
       }catch(err){
         alert('Failed to kill: '+err.message);
-        if(card)card.style.opacity='1';
+        var card=document.getElementById('agent-'+id);
+        if(card)card.classList.remove('destroying');
       }
     }
 
@@ -583,19 +608,18 @@ app.get("/", (_req, res) => {
       }finally{replenishBtn.disabled=false;replenishBtn.textContent='Add Agents';}
     };
 
-    // Kill all
+    // Kill all — mark all cards as destroying, fire deletes in parallel
     document.getElementById('kill-all-btn').onclick=async function(){
       if(!agentsCache.length){alert('No active agents to kill.');return;}
       if(!confirm('Are you sure you want to kill ALL '+agentsCache.length+' agents? This cannot be undone.'))return;
       this.disabled=true;this.textContent='Killing all...';
-      try{
-        var res=await fetch('/api/pool/instances',{method:'DELETE',headers:authHeaders});
-        var data=await res.json();
-        if(!res.ok)throw new Error(data.error||'Failed');
-        refreshFeed();refreshStatus();
-      }catch(err){
-        alert('Kill all failed: '+err.message);
-      }finally{this.disabled=false;this.textContent='Kill All';}
+      var ids=agentsCache.map(function(a){return a.id;});
+      ids.forEach(markDestroying);
+      var results=await Promise.allSettled(ids.map(killOne));
+      var failed=results.filter(function(r){return r.status==='rejected';});
+      if(failed.length)alert(failed.length+' agent(s) failed to kill.');
+      refreshFeed();refreshStatus();
+      this.disabled=false;this.textContent='Kill All';
     };
 
     // Initial load + polling
