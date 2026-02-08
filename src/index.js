@@ -202,40 +202,67 @@ app.get("/", (_req, res) => {
       color: #34C759;
     }
 
-    .result-row {
+    .qr-container {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    .qr-container img {
+      border-radius: 16px;
+      width: 256px;
+      height: 256px;
+    }
+
+    .qr-info {
+      margin-top: 24px;
+      padding: 16px 20px;
+      background: #F5F5F5;
+      border-radius: 16px;
+      width: 100%;
+      max-width: 300px;
+    }
+
+    .qr-info-row {
       display: flex;
       justify-content: space-between;
-      align-items: flex-start;
-      padding: 12px 0;
+      align-items: center;
+      padding: 8px 0;
       border-bottom: 1px solid #EBEBEB;
     }
 
-    .result-row:last-child { border-bottom: none; }
+    .qr-info-row:last-child { border-bottom: none; }
 
-    .result-label {
+    .qr-info-label {
       font-size: 12px;
       color: #666;
       text-transform: uppercase;
       letter-spacing: 0.5px;
-      flex-shrink: 0;
-      padding-top: 2px;
     }
 
-    .result-value {
+    .qr-info-value {
       font-size: 14px;
       font-weight: 500;
       color: #000;
-      text-align: right;
+    }
+
+    .invite-url {
+      margin-top: 16px;
+      padding: 12px 16px;
+      background: #F5F5F5;
+      border-radius: 12px;
+      font-family: 'SF Mono', 'Monaco', 'Courier New', monospace;
+      font-size: 11px;
       word-break: break-all;
-      margin-left: 16px;
+      color: #666;
+      cursor: pointer;
+      transition: background 0.2s;
+      width: 100%;
+      max-width: 300px;
+      text-align: center;
     }
 
-    .result-value a {
-      color: #007AFF;
-      text-decoration: none;
-    }
-
-    .result-value a:hover { text-decoration: underline; }
+    .invite-url:hover { background: #EBEBEB; }
 
     .error-message {
       color: #DC2626;
@@ -284,14 +311,39 @@ app.get("/", (_req, res) => {
 
     <div class="result-card" id="result">
       <h3>Agent Claimed</h3>
-      <div id="result-body"></div>
+      <div class="qr-container">
+        <img id="result-qr" alt="Scan to connect" />
+        <div class="qr-info">
+          <div class="qr-info-row">
+            <span class="qr-info-label">Agent</span>
+            <span class="qr-info-value" id="result-agent"></span>
+          </div>
+          <div class="qr-info-row">
+            <span class="qr-info-label">Instance</span>
+            <span class="qr-info-value" id="result-instance"></span>
+          </div>
+        </div>
+        <div class="invite-url" id="result-invite" onclick="copyInvite(this)" title="Click to copy"></div>
+      </div>
     </div>
     <div class="error-message" id="error"></div>
   </div>
 
   <script>
+    function copyInvite(el){
+      var text=el.textContent.trim();
+      navigator.clipboard.writeText(text).then(function(){
+        var original=el.textContent;
+        el.textContent='Copied!';
+        el.style.background='#D4EDDA';el.style.color='#155724';
+        setTimeout(function(){el.textContent=original;el.style.background='';el.style.color='';},1500);
+      });
+    }
+
     const f=document.getElementById('f'),btn=document.getElementById('btn');
-    const resultCard=document.getElementById('result'),resultBody=document.getElementById('result-body'),errorEl=document.getElementById('error');
+    const resultCard=document.getElementById('result'),errorEl=document.getElementById('error');
+    const resultQr=document.getElementById('result-qr'),resultAgent=document.getElementById('result-agent');
+    const resultInstance=document.getElementById('result-instance'),resultInvite=document.getElementById('result-invite');
     const sIdle=document.getElementById('s-idle'),sProv=document.getElementById('s-prov'),sClaim=document.getElementById('s-claim');
     const unavail=document.getElementById('unavailable');
     let claiming=false;
@@ -322,10 +374,10 @@ app.get("/", (_req, res) => {
         });
         const data=await res.json();
         if(!res.ok)throw new Error(data.error||'Claim failed');
-        resultBody.innerHTML=
-          '<div class="result-row"><span class="result-label">Invite URL</span><span class="result-value"><a href="'+data.inviteUrl+'" target="_blank">Open in Convos</a></span></div>'+
-          '<div class="result-row"><span class="result-label">Conversation</span><span class="result-value">'+data.conversationId+'</span></div>'+
-          '<div class="result-row"><span class="result-label">Instance</span><span class="result-value">'+data.instanceId+'</span></div>';
+        resultQr.src=data.qrDataUrl;
+        resultAgent.textContent=f.name.value.trim();
+        resultInstance.textContent=data.instanceId;
+        resultInvite.textContent=data.inviteUrl;
         resultCard.style.display='block';
       }catch(err){
         errorEl.textContent=err.message;
