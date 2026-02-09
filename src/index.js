@@ -123,34 +123,6 @@ app.get("/", (_req, res) => {
       font-weight: 400;
     }
 
-    .header-right {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
-
-    .status-badge {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      font-size: 13px;
-      font-weight: 500;
-      color: #666;
-      padding: 6px 12px;
-      background: #F5F5F5;
-      border-radius: 20px;
-    }
-
-    .status-badge .dot {
-      width: 7px;
-      height: 7px;
-      border-radius: 50%;
-    }
-
-    .status-badge.ready .dot { background: #34C759; }
-    .status-badge.starting .dot { background: #FF9500; }
-    .status-badge.claimed .dot { background: #007AFF; }
-
     /* Pool bar */
     .pool-bar {
       display: flex;
@@ -629,11 +601,6 @@ app.get("/", (_req, res) => {
         <span class="logo-text">Convos Agent Pool</span>
         <span class="logo-sub">Internal tool for quickly spinning up agents with new instructions.</span>
       </div>
-      <div class="header-right">
-        <div class="status-badge ready"><span class="dot"></span><span id="s-idle">-</span> ready</div>
-        <div class="status-badge starting"><span class="dot"></span><span id="s-prov">-</span> starting</div>
-        <div class="status-badge claimed"><span class="dot"></span><span id="s-alloc">-</span> claimed</div>
-      </div>
     </header>
 
     <div class="pool-bar">
@@ -733,9 +700,8 @@ app.get("/", (_req, res) => {
       return '<1m';
     }
 
-    // Pool status — header badges + sidebar info
-    const sIdle=document.getElementById('s-idle'),sProv=document.getElementById('s-prov'),sAlloc=document.getElementById('s-alloc');
-    const sIdle2=document.getElementById('s-idle2'),sProv2=document.getElementById('s-prov2'),sAlloc2=document.getElementById('s-alloc2');
+    // Pool status
+    const sIdle=document.getElementById('s-idle2'),sProv=document.getElementById('s-prov2'),sAlloc=document.getElementById('s-alloc2');
     const unavail=document.getElementById('unavailable'),btn=document.getElementById('btn');
     const liveCount=document.getElementById('live-count');
     let launching=false;
@@ -745,7 +711,6 @@ app.get("/", (_req, res) => {
         var res=await fetch('/api/pool/counts');
         var c=await res.json();
         sIdle.textContent=c.idle;sProv.textContent=c.provisioning;sAlloc.textContent=c.claimed;
-        sIdle2.textContent=c.idle;sProv2.textContent=c.provisioning;sAlloc2.textContent=c.claimed;
         if(!launching){
           if(c.idle>0){btn.disabled=false;unavail.style.display='none'}
           else{btn.disabled=true;unavail.style.display='block'}
@@ -768,7 +733,7 @@ app.get("/", (_req, res) => {
     function renderFeed(){
       liveCount.textContent=agentsCache.length?agentsCache.length+' running':'';
       if(!agentsCache.length){
-        feed.innerHTML='<div class="empty-state">No live agents yet. Launch one above.</div>';
+        feed.innerHTML='<div class="empty-state">No live agents yet.</div>';
         return;
       }
       feed.innerHTML=agentsCache.map(function(a){
