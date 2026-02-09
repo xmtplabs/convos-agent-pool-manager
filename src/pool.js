@@ -59,7 +59,16 @@ export async function pollProvisioning() {
         headers: { Authorization: `Bearer ${POOL_API_KEY}` },
         signal: AbortSignal.timeout(5000),
       });
-      if (!res.ok) continue;
+      if (!res.ok) {
+        // Service responded but not ready (e.g. Railway 404 "Application not found")
+        // Check if stuck beyond timeout
+        const age = Date.now() - new Date(inst.created_at).getTime();
+        if (age > STUCK_TIMEOUT_MS) {
+          console.warn(`[pool] ${inst.id} stuck in provisioning for ${Math.round(age / 60000)}min (HTTP ${res.status}) — cleaning up`);
+          await cleanupInstance(inst, "stuck in provisioning");
+        }
+        continue;
+      }
       const status = await res.json();
       if (status.ready && !status.provisioned) {
         await db.markIdle(inst.id, inst.railway_url);
