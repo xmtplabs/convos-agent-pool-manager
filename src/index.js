@@ -269,6 +269,36 @@ app.get("/", (_req, res) => {
     .btn-primary:active { transform: scale(0.98); }
     .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
 
+    .mode-toggle {
+      display: flex;
+      gap: 0;
+      margin-bottom: 20px;
+      border: 1px solid #E5E5E5;
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    .mode-btn {
+      flex: 1;
+      padding: 8px 16px;
+      border: none;
+      background: #F5F5F5;
+      color: #666;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+
+    .mode-btn.active {
+      background: #000;
+      color: #FFF;
+    }
+
+    .mode-btn:hover:not(.active) {
+      background: #E8E8E8;
+    }
+
     .btn-secondary {
       background: #F5F5F5;
       color: #000;
@@ -506,6 +536,14 @@ app.get("/", (_req, res) => {
         No instances ready. Waiting for pool to warm up...
       </div>
       <form id="f">
+        <div class="mode-toggle">
+          <button type="button" class="mode-btn active" id="mode-create">New Conversation</button>
+          <button type="button" class="mode-btn" id="mode-join">Join Existing</button>
+        </div>
+        <div class="setting-group" id="join-url-group" style="display:none">
+          <label class="setting-label" for="join-url">Conversation Link</label>
+          <input id="join-url" name="joinUrl" class="setting-input" placeholder="Paste a Convos invite link..." />
+        </div>
         <div class="setting-group">
           <label class="setting-label" for="name">Name</label>
           <input id="name" name="name" class="setting-input" placeholder="e.g. Tokyo Trip" required />
@@ -668,25 +706,61 @@ app.get("/", (_req, res) => {
       }
     }
 
+    // Mode toggle
+    var modeCreate=document.getElementById('mode-create');
+    var modeJoin=document.getElementById('mode-join');
+    var joinUrlGroup=document.getElementById('join-url-group');
+    var joinUrlInput=document.getElementById('join-url');
+    var isJoinMode=false;
+
+    modeCreate.onclick=function(){
+      isJoinMode=false;
+      modeCreate.classList.add('active');modeJoin.classList.remove('active');
+      joinUrlGroup.style.display='none';
+      joinUrlInput.removeAttribute('required');
+      btn.textContent='Launch Agent';
+    };
+    modeJoin.onclick=function(){
+      isJoinMode=true;
+      modeJoin.classList.add('active');modeCreate.classList.remove('active');
+      joinUrlGroup.style.display='block';
+      joinUrlInput.setAttribute('required','required');
+      btn.textContent='Join & Launch';
+    };
+
     // Launch form
     var f=document.getElementById('f'),errorEl=document.getElementById('error');
     f.onsubmit=async function(e){
       e.preventDefault();
       var agentName=f.name.value.trim();
-      launching=true;btn.disabled=true;btn.textContent='Launching...';errorEl.style.display='none';
+      var payload={agentId:agentName,instructions:f.instructions.value.trim()};
+      if(isJoinMode){
+        var jUrl=joinUrlInput.value.trim();
+        if(!jUrl){errorEl.textContent='Conversation link is required';errorEl.style.display='block';return;}
+        payload.joinUrl=jUrl;
+      }
+      launching=true;btn.disabled=true;btn.textContent=isJoinMode?'Joining...':'Launching...';errorEl.style.display='none';
       try{
         var res=await fetch('/api/pool/claim',{method:'POST',headers:authHeaders,
-          body:JSON.stringify({agentId:agentName,instructions:f.instructions.value.trim()})
+          body:JSON.stringify(payload)
         });
         var data=await res.json();
         if(!res.ok)throw new Error(data.error||'Launch failed');
         f.reset();
-        showQr(agentName||data.instanceId,data.inviteUrl);
+        if(isJoinMode){modeCreate.onclick();}
+        if(data.joined){
+          errorEl.style.display='block';
+          errorEl.style.background='#D4EDDA';errorEl.style.color='#155724';errorEl.style.borderColor='#C3E6CB';
+          errorEl.textContent='Agent "'+agentName+'" joined the conversation successfully!';
+          setTimeout(function(){errorEl.style.display='none';errorEl.style.background='';errorEl.style.color='';errorEl.style.borderColor='';},5000);
+        }else{
+          showQr(agentName||data.instanceId,data.inviteUrl);
+        }
         refreshFeed();
       }catch(err){
         errorEl.textContent=err.message;
-        errorEl.style.display='block';
-      }finally{launching=false;btn.textContent='Launch Agent';refreshStatus();}
+        errorEl.style.display='block';errorEl.style.background='';errorEl.style.color='';errorEl.style.borderColor='';
+      }finally{launching=false;btn.textContent=isJoinMode?'Join & Launch':'Launch Agent';refreshStatus();}
     };
 
     // Pool controls
@@ -745,16 +819,19 @@ app.get("/api/pool/status", requireAuth, async (_req, res) => {
 
 // Launch an agent — claim an idle instance and provision it with instructions.
 app.post("/api/pool/claim", requireAuth, async (req, res) => {
-  const { agentId, instructions } = req.body || {};
+  const { agentId, instructions, joinUrl } = req.body || {};
   if (!instructions || typeof instructions !== "string") {
     return res.status(400).json({ error: "instructions (string) is required" });
   }
   if (!agentId || typeof agentId !== "string") {
     return res.status(400).json({ error: "agentId (string) is required" });
   }
+  if (joinUrl && typeof joinUrl !== "string") {
+    return res.status(400).json({ error: "joinUrl must be a string if provided" });
+  }
 
   try {
-    const result = await pool.provision(agentId, instructions);
+    const result = await pool.provision(agentId, instructions, joinUrl || undefined);
     if (!result) {
       return res.status(503).json({
         error: "No idle instances available. Try again in a few minutes.",

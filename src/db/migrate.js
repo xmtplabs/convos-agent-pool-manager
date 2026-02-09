@@ -47,6 +47,19 @@ async function migrate() {
     END $$
   `;
 
+  // Add join_url column if missing
+  await sql`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'pool_instances' AND column_name = 'join_url'
+      ) THEN
+        ALTER TABLE pool_instances ADD COLUMN join_url TEXT;
+      END IF;
+    END $$
+  `;
+
   console.log("Migration complete.");
   process.exit(0);
 }

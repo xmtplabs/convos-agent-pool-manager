@@ -35,12 +35,13 @@ export async function claimOne(agentId) {
   return result.rows[0] || null;
 }
 
-export async function setClaimed(id, { inviteUrl, conversationId, instructions }) {
+export async function setClaimed(id, { inviteUrl, conversationId, instructions, joinUrl }) {
   await sql`
     UPDATE pool_instances
     SET invite_url = ${inviteUrl},
         conversation_id = ${conversationId},
         instructions = ${instructions || null},
+        join_url = ${joinUrl || null},
         updated_at = NOW()
     WHERE id = ${id}
   `;

@@ -109,17 +109,20 @@ export async function replenish() {
 }
 
 // Launch an agent — provision an idle instance with instructions.
-// Returns { inviteUrl, qrDataUrl, conversationId } or null if no idle instances.
-export async function provision(agentId, instructions) {
+// If joinUrl is provided, join an existing conversation instead of creating one.
+// Returns { inviteUrl, qrDataUrl, conversationId, joined } or null if no idle instances.
+export async function provision(agentId, instructions, joinUrl) {
   // 1. Atomically claim an idle instance
   const instance = await db.claimOne(agentId);
   if (!instance) return null;
 
-  console.log(`[pool] Launching ${instance.id} for agentId="${agentId}"`);
+  console.log(`[pool] Launching ${instance.id} for agentId="${agentId}"${joinUrl ? " (join mode)" : ""}`);
 
   // 2. Call /pool/provision on the instance
   const provisionBody = { instructions, name: agentId };
-  console.log(`[pool] POST ${instance.railway_url}/pool/provision name="${provisionBody.name}"`);
+  if (joinUrl) provisionBody.joinUrl = joinUrl;
+
+  console.log(`[pool] POST ${instance.railway_url}/pool/provision name="${provisionBody.name}"${joinUrl ? ` joinUrl="${joinUrl.slice(0, 40)}..."` : ""}`);
   const res = await fetch(`${instance.railway_url}/pool/provision`, {
     method: "POST",
     headers: {
@@ -138,9 +141,10 @@ export async function provision(agentId, instructions) {
 
   // 3. Store the invite URL, conversation ID, and instructions
   await db.setClaimed(instance.id, {
-    inviteUrl: result.inviteUrl,
+    inviteUrl: result.inviteUrl || joinUrl || null,
     conversationId: result.conversationId,
     instructions,
+    joinUrl: joinUrl || null,
   });
 
   // 4. Rename the Railway service so it's identifiable in the dashboard
@@ -151,16 +155,17 @@ export async function provision(agentId, instructions) {
     console.warn(`[pool] Failed to rename ${instance.id}:`, err.message);
   }
 
-  console.log(`[pool] Provisioned ${instance.id}: ${result.inviteUrl}`);
+  console.log(`[pool] Provisioned ${instance.id}: ${result.joined ? "joined" : "created"} conversation ${result.conversationId}`);
 
   // 5. Trigger backfill (don't await — fire and forget)
   replenish().catch((err) => console.error("[pool] Backfill error:", err));
 
   return {
-    inviteUrl: result.inviteUrl,
-    qrDataUrl: result.qrDataUrl,
+    inviteUrl: result.inviteUrl || null,
+    qrDataUrl: result.qrDataUrl || null,
     conversationId: result.conversationId,
     instanceId: instance.id,
+    joined: !!result.joined,
   };
 }
 
