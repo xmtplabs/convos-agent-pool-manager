@@ -271,32 +271,66 @@ app.get("/", (_req, res) => {
 
     .mode-toggle {
       display: flex;
-      gap: 0;
+      gap: 4px;
+      padding: 4px;
       margin-bottom: 20px;
-      border: 1px solid #E5E5E5;
-      border-radius: 8px;
-      overflow: hidden;
+      background: #F5F5F5;
+      border-radius: 12px;
     }
 
     .mode-btn {
       flex: 1;
-      padding: 8px 16px;
+      padding: 10px 16px;
       border: none;
-      background: #F5F5F5;
+      background: transparent;
       color: #666;
-      font-size: 13px;
+      font-size: 14px;
       font-weight: 500;
       cursor: pointer;
-      transition: all 0.15s;
+      transition: all 0.2s ease;
+      border-radius: 8px;
     }
 
     .mode-btn.active {
-      background: #000;
-      color: #FFF;
+      background: #FFF;
+      color: #000;
+      font-weight: 600;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.08);
     }
 
     .mode-btn:hover:not(.active) {
-      background: #E8E8E8;
+      color: #333;
+    }
+
+    .success-banner {
+      display: none;
+      align-items: center;
+      gap: 12px;
+      padding: 16px 20px;
+      background: #F0FDF4;
+      border: 1px solid #BBF7D0;
+      border-radius: 16px;
+      margin-top: 16px;
+    }
+
+    .success-banner.active {
+      display: flex;
+    }
+
+    .success-banner svg {
+      flex-shrink: 0;
+    }
+
+    .success-banner .success-text {
+      font-size: 14px;
+      font-weight: 500;
+      color: #166534;
+    }
+
+    .success-banner .success-sub {
+      font-size: 13px;
+      color: #15803D;
+      margin-top: 2px;
     }
 
     .btn-secondary {
@@ -556,6 +590,16 @@ app.get("/", (_req, res) => {
       </form>
     </div>
     <div class="error-message" id="error"></div>
+    <div class="success-banner" id="success">
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#16A34A" stroke-width="2">
+        <circle cx="12" cy="12" r="10"/>
+        <path d="M9 12l2 2 4-4"/>
+      </svg>
+      <div>
+        <div class="success-text" id="success-text"></div>
+        <div class="success-sub" id="success-sub">The agent is now active in the conversation.</div>
+      </div>
+    </div>
 
     <div class="section-header">
       <span class="section-title">Live Agents</span>
@@ -730,6 +774,7 @@ app.get("/", (_req, res) => {
 
     // Launch form
     var f=document.getElementById('f'),errorEl=document.getElementById('error');
+    var successEl=document.getElementById('success'),successTextEl=document.getElementById('success-text');
     f.onsubmit=async function(e){
       e.preventDefault();
       var agentName=f.name.value.trim();
@@ -739,7 +784,8 @@ app.get("/", (_req, res) => {
         if(!jUrl){errorEl.textContent='Conversation link is required';errorEl.style.display='block';return;}
         payload.joinUrl=jUrl;
       }
-      launching=true;btn.disabled=true;btn.textContent=isJoinMode?'Joining...':'Launching...';errorEl.style.display='none';
+      launching=true;btn.disabled=true;btn.textContent=isJoinMode?'Joining...':'Launching...';
+      errorEl.style.display='none';successEl.classList.remove('active');
       try{
         var res=await fetch('/api/pool/claim',{method:'POST',headers:authHeaders,
           body:JSON.stringify(payload)
@@ -749,17 +795,16 @@ app.get("/", (_req, res) => {
         f.reset();
         if(isJoinMode){modeCreate.onclick();}
         if(data.joined){
-          errorEl.style.display='block';
-          errorEl.style.background='#D4EDDA';errorEl.style.color='#155724';errorEl.style.borderColor='#C3E6CB';
-          errorEl.textContent='Agent "'+agentName+'" joined the conversation successfully!';
-          setTimeout(function(){errorEl.style.display='none';errorEl.style.background='';errorEl.style.color='';errorEl.style.borderColor='';},5000);
+          successTextEl.textContent=agentName+' joined the conversation';
+          successEl.classList.add('active');
+          setTimeout(function(){successEl.classList.remove('active');},8000);
         }else{
           showQr(agentName||data.instanceId,data.inviteUrl);
         }
         refreshFeed();
       }catch(err){
         errorEl.textContent=err.message;
-        errorEl.style.display='block';errorEl.style.background='';errorEl.style.color='';errorEl.style.borderColor='';
+        errorEl.style.display='block';
       }finally{launching=false;btn.textContent=isJoinMode?'Join & Launch':'Launch Agent';refreshStatus();}
     };
 
