@@ -4,6 +4,7 @@ import * as db from "./db/pool.js";
 
 const PORT = parseInt(process.env.PORT || "3001", 10);
 const POOL_API_KEY = process.env.POOL_API_KEY;
+const POOL_ENVIRONMENT = process.env.POOL_ENVIRONMENT || "staging";
 
 const app = express();
 app.disable("x-powered-by");
@@ -25,7 +26,7 @@ app.get("/healthz", (_req, res) => res.json({ ok: true }));
 
 // Version — check this to verify what code is deployed.
 const BUILD_VERSION = "2026-02-08T23:pool-v2";
-app.get("/version", (_req, res) => res.json({ version: BUILD_VERSION }));
+app.get("/version", (_req, res) => res.json({ version: BUILD_VERSION, environment: POOL_ENVIRONMENT }));
 
 // Pool counts (no auth — used by the launch form)
 app.get("/api/pool/counts", async (_req, res) => {
@@ -565,6 +566,33 @@ app.get("/", (_req, res) => {
       font-size: 13px;
     }
 
+    .env-badge {
+      display: inline-block;
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      padding: 3px 8px;
+      border-radius: 6px;
+      margin-left: 10px;
+      vertical-align: middle;
+    }
+
+    .env-badge.env-staging {
+      background: #FEF3C7;
+      border: 1px solid #FDE68A;
+      color: #92400E;
+    }
+
+    .env-badge.env-production {
+      background: #FEE2E2;
+      border: 1px solid #FECACA;
+      color: #991B1B;
+    }
+
+    body.env-production { border-top: 3px solid #DC2626; }
+    body.env-staging { border-top: 3px solid #F59E0B; }
+
     @media (max-width: 768px) {
       body { padding: 16px; }
 
@@ -594,11 +622,11 @@ app.get("/", (_req, res) => {
     }
   </style>
 </head>
-<body>
+<body class="env-${POOL_ENVIRONMENT}">
   <div class="container">
     <header class="header">
       <div class="logo-container">
-        <span class="logo-text">Convos Agent Pool</span>
+        <span class="logo-text">Convos Agent Pool<span class="env-badge env-${POOL_ENVIRONMENT}">${POOL_ENVIRONMENT}</span></span>
         <span class="logo-sub">Internal tool for quickly spinning up agents with new instructions.</span>
       </div>
     </header>
@@ -681,6 +709,7 @@ app.get("/", (_req, res) => {
 
   <script>
     const API_KEY='${POOL_API_KEY}';
+    const POOL_ENV='${POOL_ENVIRONMENT}';
     const authHeaders={'Authorization':'Bearer '+API_KEY,'Content-Type':'application/json'};
 
     function copyText(el){
@@ -801,7 +830,9 @@ app.get("/", (_req, res) => {
     }
 
     async function killAgent(id,name){
-      if(!confirm('Are you sure you want to kill "'+name+'"? This will delete the Railway service permanently.'))return;
+      var confirmMsg=(POOL_ENV==='production'?'[PRODUCTION] ':'')+
+        'Are you sure you want to kill "'+name+'"? This will delete the Railway service permanently.';
+      if(!confirm(confirmMsg))return;
       try{
         await killOne(id);
         refreshStatus();
@@ -892,6 +923,9 @@ app.get("/", (_req, res) => {
     var drainBtn=document.getElementById('drain-btn');
     drainBtn.onclick=async function(){
       var n=parseInt(replenishCount.value)||3;
+      var drainMsg=(POOL_ENV==='production'?'[PRODUCTION] ':'')+
+        'Drain '+n+' idle instance(s) from the pool?';
+      if(!confirm(drainMsg))return;
       drainBtn.disabled=true;drainBtn.textContent='Draining...';
       try{
         var res=await fetch('/api/pool/drain',{method:'POST',headers:authHeaders,
