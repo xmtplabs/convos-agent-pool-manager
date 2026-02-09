@@ -92,123 +92,84 @@ app.get("/", (_req, res) => {
     }
 
     .container {
-      max-width: 640px;
+      max-width: 900px;
       width: 100%;
       margin: 0 auto;
+    }
+
+    /* Header — matches /setup */
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 32px;
+    }
+
+    .logo-container {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
     }
 
     .logo-text {
       font-size: 20px;
       font-weight: 700;
       letter-spacing: -0.5px;
-      margin-bottom: 24px;
     }
 
-    /* Pool bar */
-    .pool-bar {
+    .header-right {
       display: flex;
       align-items: center;
-      justify-content: space-between;
-      padding: 12px 16px;
-      background: #FAFAFA;
-      border: 1px solid #EBEBEB;
-      border-radius: 14px;
-      margin-bottom: 24px;
+      gap: 8px;
     }
 
-    .pool-bar-left {
+    .status-badge {
       display: flex;
       align-items: center;
       gap: 6px;
-    }
-
-    .pool-bar-label {
-      font-size: 12px;
-      font-weight: 600;
-      color: #999;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-      margin-right: 6px;
-    }
-
-    .pool-stat {
-      display: flex;
-      align-items: center;
-      gap: 5px;
       font-size: 13px;
       font-weight: 500;
-      padding: 4px 10px;
-      background: #FFF;
-      border-radius: 8px;
       color: #666;
-      border: 1px solid #EBEBEB;
+      padding: 6px 12px;
+      background: #F5F5F5;
+      border-radius: 20px;
     }
 
-    .pool-stat .dot {
+    .status-badge .dot {
       width: 7px;
       height: 7px;
       border-radius: 50%;
     }
 
-    .pool-stat.ready .dot { background: #34C759; }
-    .pool-stat.starting .dot { background: #FF9500; }
-    .pool-stat.claimed .dot { background: #007AFF; }
+    .status-badge.ready .dot { background: #34C759; }
+    .status-badge.starting .dot { background: #FF9500; }
+    .status-badge.claimed .dot { background: #007AFF; }
 
-    .pool-bar-right {
-      display: flex;
-      align-items: center;
-      gap: 6px;
+    /* Two-column grid — matches /setup */
+    .main-content {
+      display: grid;
+      grid-template-columns: 1fr 300px;
+      gap: 24px;
+      margin-bottom: 24px;
     }
 
-    .pool-bar-right input {
-      width: 48px;
-      padding: 5px 4px;
-      font-size: 13px;
-      text-align: center;
-      border: 1px solid #EBEBEB;
-      border-radius: 8px;
-      font-family: inherit;
-      color: #000;
-      background: #FFF;
+    @media (max-width: 768px) {
+      .main-content {
+        grid-template-columns: 1fr;
+      }
     }
 
-    .pool-bar-right input:focus { outline: none; border-color: #999; }
-
-    .pool-btn {
-      font-size: 12px;
-      font-weight: 600;
-      padding: 5px 10px;
-      border: 1px solid #EBEBEB;
-      border-radius: 8px;
-      cursor: pointer;
-      background: #FFF;
-      color: #666;
-      transition: all 0.15s ease;
-    }
-
-    .pool-btn:hover { background: #F5F5F5; border-color: #CCC; }
-    .pool-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-
-    .pool-btn.danger {
-      color: #DC2626;
-      border-color: #FECACA;
-    }
-
-    .pool-btn.danger:hover { background: #FEF2F2; }
-
-    /* Launch card */
     .card {
       background: #FFF;
       border: 1px solid #EBEBEB;
       border-radius: 24px;
       padding: 32px;
-      margin-bottom: 16px;
     }
 
     .card h3 {
       font-size: 16px;
       font-weight: 700;
-      margin-bottom: 24px;
+      margin-bottom: 20px;
       letter-spacing: -0.08px;
     }
 
@@ -371,6 +332,91 @@ app.get("/", (_req, res) => {
       display: none;
     }
 
+    /* Pool controls sidebar */
+    .pool-controls-card {
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+
+    .pool-info {
+      padding: 16px 20px;
+      background: #F5F5F5;
+      border-radius: 16px;
+    }
+
+    .pool-info-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 8px 0;
+      border-bottom: 1px solid #EBEBEB;
+    }
+
+    .pool-info-row:last-child {
+      border-bottom: none;
+    }
+
+    .pool-info-label {
+      font-size: 12px;
+      color: #666;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .pool-info-value {
+      font-size: 14px;
+      font-weight: 600;
+      padding: 4px 12px;
+      border-radius: 20px;
+      font-size: 12px;
+    }
+
+    .pool-info-value.ready {
+      background: #D4EDDA;
+      color: #155724;
+    }
+
+    .pool-info-value.starting {
+      background: #FFF3CD;
+      color: #856404;
+    }
+
+    .pool-info-value.active {
+      background: #D1ECF1;
+      color: #0C5460;
+    }
+
+    .pool-actions {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .pool-action-row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .pool-action-row input {
+      width: 56px;
+      padding: 8px 4px;
+      font-size: 14px;
+      text-align: center;
+      border: 1px solid #EBEBEB;
+      border-radius: 12px;
+      font-family: inherit;
+      color: #000;
+      background: #FFF;
+    }
+
+    .pool-action-row input:focus { outline: none; border-color: #000; }
+
+    .pool-action-row .btn-secondary {
+      flex: 1;
+    }
+
     /* Agent feed */
     .section-header {
       display: flex;
@@ -522,82 +568,103 @@ app.get("/", (_req, res) => {
       font-size: 14px;
     }
 
-    @media (max-width: 540px) {
+    @media (max-width: 768px) {
       body { padding: 16px; }
 
-      .pool-bar {
+      .header {
         flex-wrap: wrap;
-        gap: 10px;
+        gap: 12px;
       }
 
-      .pool-bar-left {
+      .header-right {
         flex-wrap: wrap;
-        width: 100%;
-      }
-
-      .pool-bar-right {
-        width: 100%;
+        gap: 6px;
       }
     }
   </style>
 </head>
 <body>
   <div class="container">
-    <div class="logo-text">Convos Agent Pool</div>
+    <header class="header">
+      <div class="logo-container">
+        <span class="logo-text">Convos Agent Pool</span>
+        <span style="font-size:13px;color:#999;font-weight:400;letter-spacing:0;">Quickly spin up agents and iterate on instructions</span>
+      </div>
+      <div class="header-right">
+        <div class="status-badge ready"><span class="dot"></span><span id="s-idle">-</span> ready</div>
+        <div class="status-badge starting"><span class="dot"></span><span id="s-prov">-</span> starting</div>
+        <div class="status-badge claimed"><span class="dot"></span><span id="s-alloc">-</span> claimed</div>
+      </div>
+    </header>
 
-    <div class="pool-bar">
-      <div class="pool-bar-left">
-        <span class="pool-bar-label">Pool</span>
-        <div class="pool-stat ready"><span class="dot"></span><span id="s-idle">-</span> ready</div>
-        <div class="pool-stat starting"><span class="dot"></span><span id="s-prov">-</span> starting</div>
-        <div class="pool-stat claimed"><span class="dot"></span><span id="s-alloc">-</span> claimed</div>
+    <div class="main-content">
+      <div class="card">
+        <h3>Launch an Agent</h3>
+        <div id="unavailable" class="unavailable-msg" style="display:none">
+          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#FF9500" stroke-width="1.5">
+            <circle cx="12" cy="12" r="10" stroke-dasharray="31.4" stroke-dashoffset="10">
+              <animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur="1s" repeatCount="indefinite"/>
+            </circle>
+          </svg>
+          No instances ready. Waiting for pool to warm up...
+        </div>
+        <form id="f">
+          <div class="mode-toggle">
+            <button type="button" class="mode-btn active" id="mode-create">New Conversation</button>
+            <button type="button" class="mode-btn" id="mode-join">Join Existing</button>
+          </div>
+          <div class="setting-group" id="join-url-group" style="display:none">
+            <label class="setting-label" for="join-url">Conversation Link</label>
+            <input id="join-url" name="joinUrl" class="setting-input" placeholder="Paste a Convos invite link..." />
+          </div>
+          <div class="setting-group">
+            <label class="setting-label" for="name">Name</label>
+            <input id="name" name="name" class="setting-input" placeholder="e.g. Tokyo Trip" required />
+          </div>
+          <div class="setting-group">
+            <label class="setting-label" for="instructions">Instructions</label>
+            <textarea id="instructions" name="instructions" class="setting-input" placeholder="You are a helpful trip planner for Tokyo..." required></textarea>
+          </div>
+          <button type="submit" id="btn" class="btn-primary" disabled>Launch Agent</button>
+        </form>
+        <div class="error-message" id="error"></div>
+        <div class="success-banner" id="success">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#16A34A" stroke-width="2">
+            <circle cx="12" cy="12" r="10"/>
+            <path d="M9 12l2 2 4-4"/>
+          </svg>
+          <div>
+            <div class="success-text" id="success-text"></div>
+            <div class="success-sub" id="success-sub">The agent is now active in the conversation.</div>
+          </div>
+        </div>
       </div>
-      <div class="pool-bar-right">
-        <input id="replenish-count" type="number" min="1" max="20" value="3" />
-        <button class="pool-btn" id="replenish-btn">+ Add</button>
-        <button class="pool-btn danger" id="drain-btn">Drain</button>
-      </div>
-    </div>
 
-    <div class="card">
-      <h3>Launch an Agent</h3>
-      <div id="unavailable" class="unavailable-msg" style="display:none">
-        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#FF9500" stroke-width="1.5">
-          <circle cx="12" cy="12" r="10" stroke-dasharray="31.4" stroke-dashoffset="10">
-            <animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur="1s" repeatCount="indefinite"/>
-          </circle>
-        </svg>
-        No instances ready. Waiting for pool to warm up...
-      </div>
-      <form id="f">
-        <div class="mode-toggle">
-          <button type="button" class="mode-btn active" id="mode-create">New Conversation</button>
-          <button type="button" class="mode-btn" id="mode-join">Join Existing</button>
+      <div class="card pool-controls-card">
+        <h3>Pool Controls</h3>
+        <div class="pool-info">
+          <div class="pool-info-row">
+            <span class="pool-info-label">Ready</span>
+            <span class="pool-info-value ready" id="s-idle2">-</span>
+          </div>
+          <div class="pool-info-row">
+            <span class="pool-info-label">Starting</span>
+            <span class="pool-info-value starting" id="s-prov2">-</span>
+          </div>
+          <div class="pool-info-row">
+            <span class="pool-info-label">Claimed</span>
+            <span class="pool-info-value active" id="s-alloc2">-</span>
+          </div>
         </div>
-        <div class="setting-group" id="join-url-group" style="display:none">
-          <label class="setting-label" for="join-url">Conversation Link</label>
-          <input id="join-url" name="joinUrl" class="setting-input" placeholder="Paste a Convos invite link..." />
+        <div class="pool-actions">
+          <div class="pool-action-row">
+            <input id="replenish-count" type="number" min="1" max="20" value="3" />
+            <button class="btn-secondary" id="replenish-btn">+ Add</button>
+          </div>
+          <div class="pool-action-row">
+            <button class="btn-danger" id="drain-btn" style="flex:1">Drain Idle</button>
+          </div>
         </div>
-        <div class="setting-group">
-          <label class="setting-label" for="name">Name</label>
-          <input id="name" name="name" class="setting-input" placeholder="e.g. Tokyo Trip" required />
-        </div>
-        <div class="setting-group">
-          <label class="setting-label" for="instructions">Instructions</label>
-          <textarea id="instructions" name="instructions" class="setting-input" placeholder="You are a helpful trip planner for Tokyo..." required></textarea>
-        </div>
-        <button type="submit" id="btn" class="btn-primary" disabled>Launch Agent</button>
-      </form>
-    </div>
-    <div class="error-message" id="error"></div>
-    <div class="success-banner" id="success">
-      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#16A34A" stroke-width="2">
-        <circle cx="12" cy="12" r="10"/>
-        <path d="M9 12l2 2 4-4"/>
-      </svg>
-      <div>
-        <div class="success-text" id="success-text"></div>
-        <div class="success-sub" id="success-sub">The agent is now active in the conversation.</div>
       </div>
     </div>
 
@@ -638,8 +705,9 @@ app.get("/", (_req, res) => {
       return '<1m';
     }
 
-    // Pool status
+    // Pool status — header badges + sidebar info
     const sIdle=document.getElementById('s-idle'),sProv=document.getElementById('s-prov'),sAlloc=document.getElementById('s-alloc');
+    const sIdle2=document.getElementById('s-idle2'),sProv2=document.getElementById('s-prov2'),sAlloc2=document.getElementById('s-alloc2');
     const unavail=document.getElementById('unavailable'),btn=document.getElementById('btn');
     const liveCount=document.getElementById('live-count');
     let launching=false;
@@ -649,6 +717,7 @@ app.get("/", (_req, res) => {
         var res=await fetch('/api/pool/counts');
         var c=await res.json();
         sIdle.textContent=c.idle;sProv.textContent=c.provisioning;sAlloc.textContent=c.claimed;
+        sIdle2.textContent=c.idle;sProv2.textContent=c.provisioning;sAlloc2.textContent=c.claimed;
         if(!launching){
           if(c.idle>0){btn.disabled=false;unavail.style.display='none'}
           else{btn.disabled=true;unavail.style.display='block'}
