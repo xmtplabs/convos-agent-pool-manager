@@ -1,6 +1,6 @@
 # Convos Agent Pool Manager
 
-Manages a pool of pre-warmed [clawdbot](https://github.com/saulmc/clawdbot-railway-template) instances on [Railway](https://railway.com). Instances are created ahead of time so that when a user claims one, it's ready in seconds instead of minutes.
+Manages a pool of pre-warmed [convos-agent-railway-template](https://github.com/xmtplabs/convos-agent-railway-template) instances on [Railway](https://railway.com). Instances are created ahead of time so that when a user claims one, it's ready in seconds instead of minutes.
 
 ## How it works
 
@@ -13,13 +13,13 @@ Manages a pool of pre-warmed [clawdbot](https://github.com/saulmc/clawdbot-railw
             ┌───────────────┘   │   └───────────────┐
             ▼                   ▼                    ▼
     ┌──────────────┐   ┌──────────────┐     ┌──────────────┐
-    │  clawdbot    │   │  clawdbot    │     │  clawdbot    │
+    │    agent     │   │    agent     │     │    agent     │
     │  instance 1  │   │  instance 2  │ ... │  instance N  │
     │  (Railway)   │   │  (Railway)   │     │  (Railway)   │
     └──────────────┘   └──────────────┘     └──────────────┘
 ```
 
-1. The pool manager creates Railway services from [saulmc/clawdbot-railway-template](https://github.com/saulmc/clawdbot-railway-template)
+1. The pool manager creates Railway services from [xmtplabs/convos-agent-railway-template](https://github.com/xmtplabs/convos-agent-railway-template)
 2. It polls each instance's `/pool/status` endpoint until it reports `ready`
 3. Ready instances are marked **idle** and available for claiming
 4. When claimed via `POST /api/pool/claim`, the manager calls `/pool/provision` on the instance with the provided instructions, then backfills the pool
@@ -31,14 +31,14 @@ Instances are never destroyed by the pool manager — once claimed, they stay ru
 
 | Repo | Description |
 |------|-------------|
-| [clawdbot-railway-template](https://github.com/saulmc/clawdbot-railway-template) | The bot template deployed on each Railway instance. Must have pool mode support (`POOL_MODE=true` endpoints). |
+| [convos-agent-railway-template](https://github.com/xmtplabs/convos-agent-railway-template) | The bot template deployed on each Railway instance. Must have pool mode support (`POOL_MODE=true` endpoints). |
 
 ## Setup
 
 Requires Node.js 22+ and a [Neon](https://neon.tech) Postgres database.
 
 ```sh
-git clone https://github.com/saulmc/convos-agent-pool-manager.git
+git clone https://github.com/xmtplabs/convos-agent-pool-manager.git
 cd convos-agent-pool-manager
 npm install
 ```
@@ -56,7 +56,7 @@ cp .env.example .env
 | `RAILWAY_API_TOKEN` | Railway project-scoped API token |
 | `RAILWAY_PROJECT_ID` | Railway project ID |
 | `RAILWAY_ENVIRONMENT_ID` | Railway environment ID |
-| `RAILWAY_SOURCE_REPO` | GitHub repo to deploy (e.g. `saulmc/clawdbot-railway-template`) |
+| `RAILWAY_SOURCE_REPO` | GitHub repo to deploy (e.g. `xmtplabs/convos-agent-railway-template`) |
 | `INSTANCE_ANTHROPIC_API_KEY` | Anthropic API key injected into each instance |
 | `INSTANCE_XMTP_ENV` | XMTP environment (`dev` or `production`) |
 | `POOL_MIN_IDLE` | Minimum idle instances to maintain (default `3`) |
