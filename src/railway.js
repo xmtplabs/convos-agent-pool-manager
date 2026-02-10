@@ -48,29 +48,30 @@ export async function createService(name) {
 
   // serviceCreate always deploys from the repo's default branch (main)
   // regardless of the branch field. To build from the correct branch:
-  // 1. Create a deployment trigger so future pushes auto-deploy
+  // 1. Cancel the initial main deployment that serviceCreate auto-triggered
   // 2. Fetch the latest commit SHA from the target branch via GitHub API
-  // 3. Trigger a deploy of that specific commit via serviceInstanceDeploy
+  // 3. Deploy that specific commit via serviceInstanceDeploy
   if (branch) {
+    // Cancel the initial main deployment.
     try {
-      await gql(
-        `mutation($input: DeploymentTriggerCreateInput!) {
-          deploymentTriggerCreate(input: $input) { id }
+      const depData = await gql(
+        `query($id: String!) {
+          service(id: $id) {
+            deployments(first: 1) { edges { node { id } } }
+          }
         }`,
-        {
-          input: {
-            serviceId,
-            projectId,
-            environmentId,
-            provider: "github",
-            repository: repo,
-            branch,
-          },
-        }
+        { id: serviceId }
       );
-      console.log(`[railway] Created deployment trigger: ${repo}@${branch}`);
+      const initialDeploy = depData.service?.deployments?.edges?.[0]?.node;
+      if (initialDeploy) {
+        await gql(
+          `mutation($id: String!) { deploymentCancel(id: $id) }`,
+          { id: initialDeploy.id }
+        );
+        console.log(`[railway] Cancelled initial main deployment ${initialDeploy.id}`);
+      }
     } catch (err) {
-      console.warn(`[railway] Failed to create deployment trigger for ${serviceId}:`, err);
+      console.warn(`[railway] Failed to cancel initial deployment for ${serviceId}:`, err);
     }
 
     // Deploy the latest commit from the correct branch.
