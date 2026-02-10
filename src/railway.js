@@ -22,15 +22,19 @@ async function gql(query, variables = {}) {
 
 export async function createService(name) {
   const projectId = process.env.RAILWAY_PROJECT_ID;
+  const environmentId = process.env.RAILWAY_ENVIRONMENT_ID;
   const repo = process.env.RAILWAY_SOURCE_REPO;
   const branch = process.env.RAILWAY_SOURCE_BRANCH;
 
   const input = {
     projectId,
+    environmentId,
     name,
     source: { repo },
   };
   if (branch) input.branch = branch;
+
+  console.log(`[railway] createService: ${name}, branch=${branch || "(default)"}, env=${environmentId}`);
 
   const data = await gql(
     `mutation($input: ServiceCreateInput!) {
