@@ -47,9 +47,20 @@ export async function createService(name) {
   const serviceId = data.serviceCreate.id;
 
   // serviceCreate deploys from the repo's default branch regardless of the
-  // branch field. Create a deployment trigger so Railway builds from the
-  // correct branch (e.g. staging vs main).
+  // branch field. Use serviceConnect to explicitly set the build source to
+  // the correct branch, so that the redeploy triggered by setVariables
+  // (in pool.js) builds from the right branch.
   if (branch) {
+    await gql(
+      `mutation($id: String!, $input: ServiceConnectInput!) {
+        serviceConnect(id: $id, input: $input) { id }
+      }`,
+      { id: serviceId, input: { repo, branch } }
+    );
+    console.log(`[railway] Connected service to ${repo}@${branch}`);
+
+    // Also create a deployment trigger so future pushes to this branch
+    // auto-deploy (serviceConnect only sets the current source).
     try {
       await gql(
         `mutation($input: DeploymentTriggerCreateInput!) {
