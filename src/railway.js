@@ -44,7 +44,31 @@ export async function createService(name) {
     { input }
   );
 
-  return data.serviceCreate.id;
+  const serviceId = data.serviceCreate.id;
+
+  // serviceCreate deploys from the repo's default branch regardless of the
+  // branch field. Create a deployment trigger so Railway builds from the
+  // correct branch (e.g. staging vs main).
+  if (branch) {
+    await gql(
+      `mutation($input: DeploymentTriggerCreateInput!) {
+        deploymentTriggerCreate(input: $input) { id }
+      }`,
+      {
+        input: {
+          serviceId,
+          projectId,
+          environmentId,
+          provider: "github",
+          repository: repo,
+          branch,
+        },
+      }
+    );
+    console.log(`[railway] Created deployment trigger: ${repo}@${branch}`);
+  }
+
+  return serviceId;
 }
 
 export async function setVariables(serviceId, variables) {
