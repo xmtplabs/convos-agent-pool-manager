@@ -46,9 +46,11 @@ export async function createService(name) {
 
   const serviceId = data.serviceCreate.id;
 
-  // serviceCreate deploys from the repo's default branch regardless of the
-  // branch field. Create a deployment trigger for the correct branch, then
-  // use environmentTriggersDeploy to kick off a fresh build from that branch.
+  // serviceCreate always deploys from the repo's default branch (main)
+  // regardless of the branch field. To build from the correct branch:
+  // 1. Create a deployment trigger so future pushes auto-deploy
+  // 2. Fetch the latest commit SHA from the target branch via GitHub API
+  // 3. Trigger a deploy of that specific commit via serviceInstanceDeploy
   if (branch) {
     try {
       await gql(
@@ -71,20 +73,24 @@ export async function createService(name) {
       console.warn(`[railway] Failed to create deployment trigger for ${serviceId}:`, err);
     }
 
-    // Trigger a fresh deployment so the service builds from the correct branch
-    // instead of the initial main deployment.
+    // Deploy the latest commit from the correct branch.
     try {
+      const ghRes = await fetch(`https://api.github.com/repos/${repo}/commits/${branch}`, {
+        headers: { Accept: "application/vnd.github.v3+json" },
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!ghRes.ok) throw new Error(`GitHub API ${ghRes.status}`);
+      const { sha } = await ghRes.json();
+
       await gql(
-        `mutation($input: EnvironmentTriggersDeployInput!) {
-          environmentTriggersDeploy(input: $input)
+        `mutation($serviceId: String!, $environmentId: String!, $commitSha: String!) {
+          serviceInstanceDeploy(serviceId: $serviceId, environmentId: $environmentId, commitSha: $commitSha)
         }`,
-        {
-          input: { projectId, environmentId, serviceId },
-        }
+        { serviceId, environmentId, commitSha: sha }
       );
-      console.log(`[railway] Triggered deploy for ${serviceId}`);
+      console.log(`[railway] Deployed ${repo}@${branch} (${sha.slice(0, 8)}) to ${serviceId}`);
     } catch (err) {
-      console.warn(`[railway] Failed to trigger deploy for ${serviceId}:`, err);
+      console.warn(`[railway] Failed to deploy correct branch for ${serviceId}:`, err);
     }
   }
 
