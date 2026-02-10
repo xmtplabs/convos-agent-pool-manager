@@ -20,7 +20,7 @@ async function gql(query, variables = {}) {
   return json.data;
 }
 
-export async function createService(name) {
+export async function createService(name, variables = {}) {
   const projectId = process.env.RAILWAY_PROJECT_ID;
   const environmentId = process.env.RAILWAY_ENVIRONMENT_ID;
   if (!environmentId) throw new Error("RAILWAY_ENVIRONMENT_ID not set");
@@ -32,6 +32,7 @@ export async function createService(name) {
     environmentId,
     name,
     source: { repo },
+    variables,
   };
   if (branch) input.branch = branch;
 
@@ -51,6 +52,9 @@ export async function createService(name) {
   // 1. Cancel the initial main deployment that serviceCreate auto-triggered
   // 2. Fetch the latest commit SHA from the target branch via GitHub API
   // 3. Deploy that specific commit via serviceInstanceDeploy
+  //
+  // Variables are passed inline to serviceCreate above so that
+  // setVariables doesn't trigger another main deployment.
   if (branch) {
     // Cancel the initial main deployment.
     try {
