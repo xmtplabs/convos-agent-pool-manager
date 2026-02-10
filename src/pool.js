@@ -28,13 +28,10 @@ export async function createInstance() {
 
   console.log(`[pool] Creating instance ${name}...`);
 
-  // 1. Create Railway service from repo
-  const serviceId = await railway.createService(name);
+  // 1. Create Railway service from repo (env vars passed inline to avoid
+  //    a separate setVariables call that would trigger another main deploy)
+  const serviceId = await railway.createService(name, instanceEnvVars());
   console.log(`[pool]   Railway service created: ${serviceId}`);
-
-  // 2. Set env vars (this triggers the first deployment)
-  await railway.setVariables(serviceId, instanceEnvVars());
-  console.log(`[pool]   Env vars set`);
 
   // 3. Generate public domain
   const domain = await railway.createDomain(serviceId);
