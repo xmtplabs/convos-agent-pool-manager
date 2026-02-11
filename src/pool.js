@@ -259,6 +259,54 @@ export async function killInstance(id) {
   replenish().catch((err) => console.error("[pool] Backfill error:", err));
 }
 
+// Heartbeat — ping all non-provisioning instances to keep Sprites awake.
+// Also serves as a health check: if an instance fails 3 consecutive pings, clean it up.
+const _failCounts = new Map();
+const MAX_HEARTBEAT_FAILURES = 3;
+
+export async function heartbeat() {
+  const instances = await db.listAll();
+  const toPing = instances.filter((i) => i.status === "idle" || i.status === "claimed");
+
+  for (const inst of toPing) {
+    if (!inst.sprite_url) continue;
+    try {
+      const res = await fetch(`${inst.sprite_url}/pool/status`, {
+        headers: { Authorization: `Bearer ${POOL_API_KEY}` },
+        signal: AbortSignal.timeout(10000),
+      });
+      if (res.ok) {
+        _failCounts.delete(inst.id);
+      } else {
+        throw new Error(`HTTP ${res.status}`);
+      }
+    } catch (err) {
+      const fails = (_failCounts.get(inst.id) || 0) + 1;
+      _failCounts.set(inst.id, fails);
+      console.warn(`[heartbeat] ${inst.id} (${inst.status}) failed ping ${fails}/${MAX_HEARTBEAT_FAILURES}: ${err.message}`);
+
+      if (fails >= MAX_HEARTBEAT_FAILURES) {
+        console.error(`[heartbeat] ${inst.id} unreachable — cleaning up`);
+        _failCounts.delete(inst.id);
+
+        if (inst.status === "idle") {
+          await cleanupInstance(inst, "heartbeat failure");
+        } else {
+          // Attempt to restart the server on the claimed Sprite
+          try {
+            await sprite.startDetached(inst.sprite_name, "cd /opt/convos-agent && node src/server.js");
+            console.log(`[heartbeat] ${inst.id} — server restarted`);
+            _failCounts.delete(inst.id);
+          } catch {
+            console.error(`[heartbeat] ${inst.id} — restart failed, cleaning up`);
+            await cleanupInstance(inst, "heartbeat failure + restart failed");
+          }
+        }
+      }
+    }
+  }
+}
+
 // Run a single reconcile + poll + replenish cycle.
 export async function tick() {
   // Reconcile periodically (every RECONCILE_INTERVAL_MS, not every tick)

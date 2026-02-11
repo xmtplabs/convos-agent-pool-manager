@@ -1057,6 +1057,12 @@ setInterval(() => {
   pool.tick().catch((err) => console.error("[tick] Error:", err));
 }, TICK_INTERVAL);
 
+// Heartbeat — keep Sprites awake and monitor health
+const HEARTBEAT_INTERVAL = parseInt(process.env.HEARTBEAT_INTERVAL_MS || "20000", 10);
+setInterval(() => {
+  pool.heartbeat().catch((err) => console.error("[heartbeat] Error:", err));
+}, HEARTBEAT_INTERVAL);
+
 // Run initial tick on startup
 setTimeout(() => {
   pool.tick().catch((err) => console.error("[tick] Initial tick error:", err));
