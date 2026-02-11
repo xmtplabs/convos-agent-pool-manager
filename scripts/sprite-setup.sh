@@ -14,8 +14,10 @@ if ! command -v bun &> /dev/null; then
 fi
 echo "[2/6] Bun ready"
 
-# --- Install pnpm (corepack not reliable on Sprite base image) ---
+# --- Install pnpm and ensure it's in PATH ---
 npm install -g pnpm > /dev/null 2>&1
+export PATH="$(npm config get prefix)/bin:$PATH"
+echo "[2.5/6] pnpm ready: $(pnpm --version)"
 
 # --- Clone and build OpenClaw ---
 OPENCLAW_BRANCH="${OPENCLAW_GIT_REF:-main}"

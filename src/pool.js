@@ -38,7 +38,13 @@ export async function createInstance() {
   const setupScript = readFileSync(
     new URL("../scripts/sprite-setup.sh", import.meta.url), "utf-8"
   );
-  await sprite.exec(name, setupScript);
+  try {
+    await sprite.exec(name, setupScript);
+  } catch (err) {
+    const r = err.result || {};
+    console.error(`[pool]   Setup script failed (exit ${r.exitCode}):\n  stdout: ${String(r.stdout || "").trim().split("\n").pop()}\n  stderr: ${String(r.stderr || "").trim()}`);
+    throw err;
+  }
   console.log(`[pool]   Setup script complete`);
 
   // 3. Write .env file for the convos-agent wrapper
