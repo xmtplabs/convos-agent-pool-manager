@@ -980,7 +980,7 @@ app.post("/api/pool/claim", requireAuth, async (req, res) => {
     return res.status(400).json({ error: "dev.convos.org links cannot be used in the production environment" });
   }
   if (joinUrl && POOL_ENVIRONMENT !== "production" && /popup\.convos\.org/i.test(joinUrl)) {
-    return res.status(400).json({ error: "popup.convos.org links cannot be used in the dev environment" });
+    return res.status(400).json({ error: `popup.convos.org links cannot be used in the ${POOL_ENVIRONMENT} environment` });
   }
 
   try {
