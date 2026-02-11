@@ -34,7 +34,11 @@ export async function createInstance() {
   const { url } = await sprite.createSprite(name);
   console.log(`[pool]   Sprite created: ${url}`);
 
-  // 2. Run setup script inside the Sprite
+  // 2. Register in DB immediately so tick() sees it as provisioning
+  await db.insertInstance({ id, spriteName: name, spriteUrl: url });
+  console.log(`[pool]   Registered as provisioning`);
+
+  // 3. Run setup script inside the Sprite (takes several minutes)
   const setupScript = readFileSync(
     new URL("../scripts/sprite-setup.sh", import.meta.url), "utf-8"
   );
@@ -43,22 +47,21 @@ export async function createInstance() {
   } catch (err) {
     const r = err.result || {};
     console.error(`[pool]   Setup script failed (exit ${r.exitCode}):\n  stdout: ${String(r.stdout || "").trim().split("\n").pop()}\n  stderr: ${String(r.stderr || "").trim()}`);
+    // Clean up the failed sprite and DB entry
+    await sprite.deleteSprite(name).catch(() => {});
+    await db.deleteInstance(id);
     throw err;
   }
   console.log(`[pool]   Setup script complete`);
 
-  // 3. Write .env file for the convos-agent wrapper
+  // 4. Write .env file for the convos-agent wrapper
   const envVars = instanceEnvString();
   await sprite.exec(name, `cat > /opt/convos-agent/.env << 'ENVEOF'\n${envVars}\nENVEOF`);
   console.log(`[pool]   Environment written`);
 
-  // 4. Start the server (detached so it keeps running)
+  // 5. Start the server (detached so it keeps running)
   await sprite.startDetached(name, "cd /opt/convos-agent && node src/server.js");
   console.log(`[pool]   Server starting`);
-
-  // 5. Insert into DB as 'provisioning'
-  await db.insertInstance({ id, spriteName: name, spriteUrl: url });
-  console.log(`[pool]   Registered as provisioning`);
 
   return { id, name, url };
 }
@@ -296,7 +299,13 @@ export async function heartbeat() {
         console.error(`[heartbeat] ${inst.id} unreachable — cleaning up`);
         _failCounts.delete(inst.id);
 
-        if (inst.status === "idle") {
+        // Check if the Sprite actually exists before deciding what to do
+        const info = await sprite.getSpriteInfo(inst.sprite_name);
+        if (!info) {
+          // Sprite is gone (or sprite_name is a stale Railway UUID) — just remove from DB
+          console.log(`[heartbeat] ${inst.id} — Sprite gone, removing from DB`);
+          await db.deleteInstance(inst.id);
+        } else if (inst.status === "idle") {
           await cleanupInstance(inst, "heartbeat failure");
         } else {
           // Attempt to restart the server on the claimed Sprite
