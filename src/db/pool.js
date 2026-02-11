@@ -1,16 +1,16 @@
 import { sql } from "./connection.js";
 
-export async function insertInstance({ id, railwayServiceId, railwayUrl }) {
+export async function insertInstance({ id, spriteName, spriteUrl }) {
   await sql`
-    INSERT INTO pool_instances (id, railway_service_id, railway_url, status)
-    VALUES (${id}, ${railwayServiceId}, ${railwayUrl}, 'provisioning')
+    INSERT INTO pool_instances (id, sprite_name, sprite_url, status)
+    VALUES (${id}, ${spriteName}, ${spriteUrl}, 'provisioning')
   `;
 }
 
-export async function markIdle(id, railwayUrl) {
+export async function markIdle(id, spriteUrl) {
   await sql`
     UPDATE pool_instances
-    SET status = 'idle', railway_url = ${railwayUrl}, updated_at = NOW()
+    SET status = 'idle', sprite_url = ${spriteUrl}, updated_at = NOW()
     WHERE id = ${id}
   `;
 }
