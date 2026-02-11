@@ -1,5 +1,6 @@
 import { readFileSync } from "fs";
-import { nanoid } from "nanoid";
+import { customAlphabet } from "nanoid";
+const nanoid = customAlphabet("0123456789abcdefghijklmnopqrstuvwxyz", 12);
 import * as db from "./db/pool.js";
 import * as sprite from "./sprite.js";
 
