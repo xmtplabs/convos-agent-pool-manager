@@ -33,6 +33,9 @@ function instanceEnvString() {
     `XMTP_ENV=${process.env.INSTANCE_XMTP_ENV || "dev"}`,
     `SETUP_PASSWORD=${process.env.INSTANCE_SETUP_PASSWORD || "pool-managed"}`,
     `PORT=8080`,
+    // State dirs — must be writable by the "sprite" user (not /root)
+    `OPENCLAW_STATE_DIR=/opt/convos-agent/.openclaw`,
+    `OPENCLAW_WORKSPACE_DIR=/opt/convos-agent/.openclaw/workspace`,
   ].join("\n");
 }
 

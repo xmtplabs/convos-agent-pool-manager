@@ -20,10 +20,13 @@ export PATH="$(npm config get prefix)/bin:$PATH"
 echo "[2.5/6] pnpm ready: $(pnpm --version)"
 
 # --- Clone and build OpenClaw ---
+# Install to /openclaw so paths match the convos-agent server defaults:
+#   OPENCLAW_ENTRY=/openclaw/dist/entry.js
+#   plugins.load.paths=["/openclaw/extensions"]
 OPENCLAW_BRANCH="${OPENCLAW_GIT_REF:-main}"
-rm -rf /opt/openclaw-src
-git clone --depth 1 --branch "$OPENCLAW_BRANCH" https://github.com/xmtplabs/openclaw /opt/openclaw-src
-cd /opt/openclaw-src
+rm -rf /openclaw
+git clone --depth 1 --branch "$OPENCLAW_BRANCH" https://github.com/xmtplabs/openclaw /openclaw
+cd /openclaw
 
 # Patch extension version constraints
 find ./extensions -name 'package.json' -type f | while read f; do
@@ -40,7 +43,7 @@ echo "[3/6] OpenClaw built"
 mkdir -p /usr/local/bin
 cat > /usr/local/bin/openclaw << 'WRAPPER'
 #!/usr/bin/env bash
-exec node /opt/openclaw-src/dist/entry.js "$@"
+exec node /openclaw/dist/entry.js "$@"
 WRAPPER
 chmod +x /usr/local/bin/openclaw
 echo "[4/6] OpenClaw CLI ready"
@@ -53,6 +56,9 @@ npm install --omit=dev > /dev/null 2>&1
 echo "[5/6] Convos-agent wrapper installed"
 
 # --- Create persistent directories ---
-mkdir -p /root/.openclaw /root/.openclaw/workspace
+# Setup runs as root, but the server runs as user "sprite" via createSession.
+# Make state + app dirs writable by the sprite user.
+mkdir -p /opt/convos-agent/.openclaw/workspace
+chmod -R 777 /opt/convos-agent
 
 echo "[6/6] Setup complete"
