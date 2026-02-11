@@ -51,30 +51,35 @@ export async function createInstance() {
   await db.insertInstance({ id, spriteName: name, spriteUrl: url });
   console.log(`[pool]   Registered as provisioning`);
 
-  // 3. Run setup script inside the Sprite (takes several minutes)
-  const setupScript = readFileSync(
-    new URL("../scripts/sprite-setup.sh", import.meta.url), "utf-8"
-  );
+  // 3–5: Setup, env, and start — clean up sprite+DB on any failure
   try {
+    // 3. Run setup script inside the Sprite (takes several minutes)
+    const setupScript = readFileSync(
+      new URL("../scripts/sprite-setup.sh", import.meta.url), "utf-8"
+    );
     await sprite.exec(name, setupScript);
+    console.log(`[pool]   Setup script complete`);
+
+    // 4. Write .env file for the convos-agent wrapper
+    const envVars = instanceEnvString();
+    await retryExec(name, `cat > /opt/convos-agent/.env << 'ENVEOF'\n${envVars}\nENVEOF`);
+    console.log(`[pool]   Environment written`);
+
+    // 5. Start the server (detached so it keeps running)
+    await sprite.startDetached(name, "cd /opt/convos-agent && node src/server.js");
+    console.log(`[pool]   Server starting`);
   } catch (err) {
     const r = err.result || {};
-    console.error(`[pool]   Setup script failed (exit ${r.exitCode}):\n  stdout: ${String(r.stdout || "").trim().split("\n").pop()}\n  stderr: ${String(r.stderr || "").trim()}`);
+    if (r.exitCode !== undefined) {
+      console.error(`[pool]   Setup failed (exit ${r.exitCode}):\n  stdout: ${String(r.stdout || "").trim().split("\n").pop()}\n  stderr: ${String(r.stderr || "").trim()}`);
+    } else {
+      console.error(`[pool]   Instance setup failed: ${err.message}`);
+    }
     // Clean up the failed sprite and DB entry
     await sprite.deleteSprite(name).catch(() => {});
     await db.deleteInstance(id);
     throw err;
   }
-  console.log(`[pool]   Setup script complete`);
-
-  // 4. Write .env file for the convos-agent wrapper
-  const envVars = instanceEnvString();
-  await retryExec(name, `cat > /opt/convos-agent/.env << 'ENVEOF'\n${envVars}\nENVEOF`);
-  console.log(`[pool]   Environment written`);
-
-  // 5. Start the server (detached so it keeps running)
-  await sprite.startDetached(name, "cd /opt/convos-agent && node src/server.js");
-  console.log(`[pool]   Server starting`);
 
   return { id, name, url };
 }
@@ -83,30 +88,36 @@ export async function createInstance() {
 // If stuck beyond STUCK_TIMEOUT_MS, verify against Sprite API and clean up dead ones.
 export async function pollProvisioning() {
   const instances = await db.listProvisioning();
+  if (instances.length > 0) {
+    console.log(`[poll] Checking ${instances.length} provisioning instance(s)...`);
+  }
   for (const inst of instances) {
     if (!inst.sprite_url) continue;
+    const age = Date.now() - new Date(inst.created_at).getTime();
+    const ageStr = `${Math.round(age / 1000)}s`;
     try {
       const res = await fetch(`${inst.sprite_url}/pool/status`, {
         headers: { Authorization: `Bearer ${POOL_API_KEY}` },
         signal: AbortSignal.timeout(5000),
       });
       if (!res.ok) {
-        const age = Date.now() - new Date(inst.created_at).getTime();
+        console.log(`[poll] ${inst.id} (${ageStr}) — HTTP ${res.status}`);
         if (age > STUCK_TIMEOUT_MS) {
-          console.warn(`[pool] ${inst.id} stuck in provisioning for ${Math.round(age / 60000)}min (HTTP ${res.status}) — cleaning up`);
+          console.warn(`[poll] ${inst.id} stuck for ${Math.round(age / 60000)}min — cleaning up`);
           await cleanupInstance(inst, "stuck in provisioning");
         }
         continue;
       }
       const status = await res.json();
+      console.log(`[poll] ${inst.id} (${ageStr}) — ready=${status.ready} provisioned=${status.provisioned}`);
       if (status.ready && !status.provisioned) {
         await db.markIdle(inst.id, inst.sprite_url);
-        console.log(`[pool] ${inst.id} is now idle`);
+        console.log(`[poll] ${inst.id} is now idle`);
       }
-    } catch {
-      const age = Date.now() - new Date(inst.created_at).getTime();
+    } catch (err) {
+      console.log(`[poll] ${inst.id} (${ageStr}) — ${err.message || "fetch error"}`);
       if (age > STUCK_TIMEOUT_MS) {
-        console.warn(`[pool] ${inst.id} stuck in provisioning for ${Math.round(age / 60000)}min — cleaning up`);
+        console.warn(`[poll] ${inst.id} stuck for ${Math.round(age / 60000)}min — cleaning up`);
         await cleanupInstance(inst, "stuck in provisioning");
       }
     }

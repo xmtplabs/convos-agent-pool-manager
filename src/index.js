@@ -69,6 +69,37 @@ app.delete("/api/pool/instances/:id", requireAuth, async (req, res) => {
   }
 });
 
+// Debug: probe a sprite to see if the server is actually running
+app.get("/api/pool/debug/:id", requireAuth, async (req, res) => {
+  const { default: sprite } = await import("./sprite.js");
+  const instances = await db.listAll();
+  const inst = instances.find((i) => i.id === req.params.id);
+  if (!inst) return res.status(404).json({ error: "not found" });
+
+  const results = {};
+  try {
+    const ps = await sprite.exec(inst.sprite_name, "ps aux | grep -E 'node|PID' | head -10");
+    results.processes = ps.stdout?.trim();
+  } catch (err) { results.processes = `error: ${err.message}`; }
+
+  try {
+    const curl = await sprite.exec(inst.sprite_name, "curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/pool/status 2>&1 || echo 'curl-failed'");
+    results.localCurl = curl.stdout?.trim();
+  } catch (err) { results.localCurl = `error: ${err.message}`; }
+
+  try {
+    const env = await sprite.exec(inst.sprite_name, "cat /opt/convos-agent/.env 2>/dev/null || echo 'no .env'");
+    results.envExists = !env.stdout?.includes("no .env");
+  } catch (err) { results.envExists = `error: ${err.message}`; }
+
+  try {
+    const net = await sprite.exec(inst.sprite_name, "ss -tlnp 2>/dev/null || netstat -tlnp 2>/dev/null || echo 'no ss/netstat'");
+    results.listening = net.stdout?.trim();
+  } catch (err) { results.listening = `error: ${err.message}`; }
+
+  res.json({ id: inst.id, name: inst.sprite_name, status: inst.status, url: inst.sprite_url, ...results });
+});
+
 // Dashboard page
 app.get("/", (_req, res) => {
   res.type("html").send(`<!doctype html>
