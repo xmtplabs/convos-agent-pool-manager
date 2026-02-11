@@ -10,9 +10,9 @@ function client() {
   return _client;
 }
 
-// Sprite public URL convention
+// Sprite public URL convention (*.sprites.app, NOT *.sprites.dev which is the API domain)
 function spriteUrl(name) {
-  return `https://${name}.sprites.dev`;
+  return `https://${name}.sprites.app`;
 }
 
 // Create a new sprite and set its URL to public.
@@ -22,7 +22,7 @@ export async function createSprite(name) {
   const sprite = await client().createSprite(name);
 
   // Make the sprite URL publicly accessible (no sprite auth on HTTP)
-  await fetch(`${client().baseURL}/v1/sprites/${name}`, {
+  const urlRes = await fetch(`${client().baseURL}/v1/sprites/${name}`, {
     method: "PUT",
     headers: {
       Authorization: `Bearer ${client().token}`,
@@ -30,6 +30,13 @@ export async function createSprite(name) {
     },
     body: JSON.stringify({ url_settings: { auth: "public" } }),
   });
+  if (!urlRes.ok) {
+    const body = await urlRes.text().catch(() => "");
+    console.warn(`[sprite]   url_settings PUT failed: ${urlRes.status} ${body}`);
+  } else {
+    const body = await urlRes.json().catch(() => ({}));
+    console.log(`[sprite]   url_settings: ${JSON.stringify(body.url_settings || body.url || "ok")}`);
+  }
 
   const url = spriteUrl(name);
   console.log(`[sprite]   URL: ${url}`);

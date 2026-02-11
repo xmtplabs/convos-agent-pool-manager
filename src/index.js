@@ -71,7 +71,7 @@ app.delete("/api/pool/instances/:id", requireAuth, async (req, res) => {
 
 // Debug: probe a sprite to see if the server is actually running
 app.get("/api/pool/debug/:id", requireAuth, async (req, res) => {
-  const { default: sprite } = await import("./sprite.js");
+  const sprite = await import("./sprite.js");
   const instances = await db.listAll();
   const inst = instances.find((i) => i.id === req.params.id);
   if (!inst) return res.status(404).json({ error: "not found" });
@@ -83,9 +83,9 @@ app.get("/api/pool/debug/:id", requireAuth, async (req, res) => {
   } catch (err) { results.processes = `error: ${err.message}`; }
 
   try {
-    const curl = await sprite.exec(inst.sprite_name, "curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/pool/status 2>&1 || echo 'curl-failed'");
-    results.localCurl = curl.stdout?.trim();
-  } catch (err) { results.localCurl = `error: ${err.message}`; }
+    const check = await sprite.exec(inst.sprite_name, `node -e "fetch('http://localhost:8080/pool/status').then(async r=>{const b=await r.text();console.log(JSON.stringify({status:r.status,body:b.slice(0,200)}))}).catch(e=>console.log(JSON.stringify({error:e.message})))"`);
+    results.localCheck = check.stdout?.trim();
+  } catch (err) { results.localCheck = `error: ${err.message}`; }
 
   try {
     const env = await sprite.exec(inst.sprite_name, "cat /opt/convos-agent/.env 2>/dev/null || echo 'no .env'");
