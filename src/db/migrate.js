@@ -4,8 +4,8 @@ async function migrate() {
   await sql`
     CREATE TABLE IF NOT EXISTS pool_instances (
       id TEXT PRIMARY KEY,
-      railway_service_id TEXT NOT NULL,
-      railway_url TEXT,
+      sprite_name TEXT NOT NULL,
+      sprite_url TEXT,
       status TEXT NOT NULL DEFAULT 'provisioning',
       claimed_by TEXT,
       claimed_at TIMESTAMPTZ,
@@ -56,6 +56,25 @@ async function migrate() {
         WHERE table_name = 'pool_instances' AND column_name = 'join_url'
       ) THEN
         ALTER TABLE pool_instances ADD COLUMN join_url TEXT;
+      END IF;
+    END $$
+  `;
+
+  // Rename Railway columns to Sprite columns
+  await sql`
+    DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'pool_instances' AND column_name = 'railway_service_id'
+      ) THEN
+        ALTER TABLE pool_instances RENAME COLUMN railway_service_id TO sprite_name;
+      END IF;
+      IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'pool_instances' AND column_name = 'railway_url'
+      ) THEN
+        ALTER TABLE pool_instances RENAME COLUMN railway_url TO sprite_url;
       END IF;
     END $$
   `;
