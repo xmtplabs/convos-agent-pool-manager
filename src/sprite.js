@@ -10,18 +10,14 @@ function client() {
   return _client;
 }
 
-// Sprite public URL convention (*.sprites.app, NOT *.sprites.dev which is the API domain)
-function spriteUrl(name) {
-  return `https://${name}.sprites.app`;
-}
-
 // Create a new sprite and set its URL to public.
-// Returns { name, url } where url is the public HTTPS URL.
+// Returns { name, url } where url is the public HTTPS URL from the API.
 export async function createSprite(name) {
   console.log(`[sprite] Creating sprite: ${name}`);
-  const sprite = await client().createSprite(name);
+  await client().createSprite(name);
 
-  // Make the sprite URL publicly accessible (no sprite auth on HTTP)
+  // Make the sprite URL publicly accessible and read back the assigned URL
+  // (the API adds a hash suffix to the name, e.g. name-bmabx.sprites.app)
   const urlRes = await fetch(`${client().baseURL}/v1/sprites/${name}`, {
     method: "PUT",
     headers: {
@@ -32,15 +28,15 @@ export async function createSprite(name) {
   });
   if (!urlRes.ok) {
     const body = await urlRes.text().catch(() => "");
-    console.warn(`[sprite]   url_settings PUT failed: ${urlRes.status} ${body}`);
-  } else {
-    const body = await urlRes.json().catch(() => ({}));
-    console.log(`[sprite]   url_settings: ${JSON.stringify(body.url_settings || body.url || "ok")}`);
+    throw new Error(`url_settings PUT failed: ${urlRes.status} ${body}`);
   }
-
-  const url = spriteUrl(name);
+  const info = await urlRes.json();
+  const url = info.url;
+  if (!url) {
+    throw new Error(`Sprite API did not return a URL for ${name}`);
+  }
   console.log(`[sprite]   URL: ${url}`);
-  return { name: sprite.name, url };
+  return { name, url };
 }
 
 // Delete a sprite by name. No-op if already gone.

@@ -97,6 +97,17 @@ app.get("/api/pool/debug/:id", requireAuth, async (req, res) => {
     results.listening = net.stdout?.trim();
   } catch (err) { results.listening = `error: ${err.message}`; }
 
+  // Fetch raw sprite info from the API to see what URL it reports
+  try {
+    const token = process.env.SPRITE_TOKEN;
+    const apiRes = await fetch(`https://api.sprites.dev/v1/sprites/${inst.sprite_name}`, {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(5000),
+    });
+    results.apiStatus = apiRes.status;
+    results.apiBody = await apiRes.json().catch(() => apiRes.text());
+  } catch (err) { results.apiInfo = `error: ${err.message}`; }
+
   res.json({ id: inst.id, name: inst.sprite_name, status: inst.status, url: inst.sprite_url, ...results });
 });
 

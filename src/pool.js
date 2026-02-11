@@ -66,7 +66,7 @@ export async function createInstance() {
     console.log(`[pool]   Environment written`);
 
     // 5. Start the server (detached so it keeps running)
-    await sprite.startDetached(name, "cd /opt/convos-agent && node src/server.js");
+    await sprite.startDetached(name, "cd /opt/convos-agent && node --env-file=.env src/server.js");
     console.log(`[pool]   Server starting`);
   } catch (err) {
     const r = err.result || {};
@@ -334,7 +334,7 @@ export async function heartbeat() {
         } else {
           // Attempt to restart the server on the claimed Sprite
           try {
-            await sprite.startDetached(inst.sprite_name, "cd /opt/convos-agent && node src/server.js");
+            await sprite.startDetached(inst.sprite_name, "cd /opt/convos-agent && node --env-file=.env src/server.js");
             console.log(`[heartbeat] ${inst.id} — server restarted`);
             _failCounts.delete(inst.id);
           } catch {
