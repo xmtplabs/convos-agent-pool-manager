@@ -7,6 +7,19 @@ import * as sprite from "./sprite.js";
 const POOL_API_KEY = process.env.POOL_API_KEY;
 const MIN_IDLE = parseInt(process.env.POOL_MIN_IDLE || "3", 10);
 const MAX_TOTAL = parseInt(process.env.POOL_MAX_TOTAL || "10", 10);
+
+// Retry helper for transient WebSocket/network errors on Sprite exec calls.
+async function retryExec(name, command, { retries = 2, delayMs = 3000 } = {}) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await sprite.exec(name, command);
+    } catch (err) {
+      if (attempt > retries) throw err;
+      console.warn(`[pool] exec attempt ${attempt} failed on ${name}, retrying in ${delayMs}ms: ${err.message}`);
+      await new Promise((r) => setTimeout(r, delayMs));
+    }
+  }
+}
 const STUCK_TIMEOUT_MS = parseInt(process.env.POOL_STUCK_TIMEOUT_MS || String(15 * 60 * 1000), 10);
 const RECONCILE_INTERVAL_MS = parseInt(process.env.POOL_RECONCILE_INTERVAL_MS || String(5 * 60 * 1000), 10);
 let _lastReconcile = 0;
@@ -56,7 +69,7 @@ export async function createInstance() {
 
   // 4. Write .env file for the convos-agent wrapper
   const envVars = instanceEnvString();
-  await sprite.exec(name, `cat > /opt/convos-agent/.env << 'ENVEOF'\n${envVars}\nENVEOF`);
+  await retryExec(name, `cat > /opt/convos-agent/.env << 'ENVEOF'\n${envVars}\nENVEOF`);
   console.log(`[pool]   Environment written`);
 
   // 5. Start the server (detached so it keeps running)
