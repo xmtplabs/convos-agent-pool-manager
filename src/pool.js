@@ -244,8 +244,14 @@ export async function provision(agentId, instructions, joinUrl) {
 
   console.log(`[pool] Provisioned ${instance.id}: ${result.joined ? "joined" : "created"} conversation ${result.conversationId}`);
 
-  // 4. Trigger backfill (don't await — fire and forget)
-  replenish().catch((err) => console.error("[pool] Backfill error:", err));
+  // 4. Always start a 1-for-1 replacement (capped by MAX_TOTAL).
+  //    More robust under heavy demand than waiting for deficit-based replenish.
+  const counts = await db.countByStatus();
+  const total = counts.provisioning + counts.idle + counts.claimed;
+  if (total < MAX_TOTAL) {
+    console.log(`[pool] Starting 1-for-1 replacement (${total}/${MAX_TOTAL})`);
+    createInstance().catch((err) => console.error("[pool] Replacement error:", err));
+  }
 
   return {
     inviteUrl: result.inviteUrl || null,
