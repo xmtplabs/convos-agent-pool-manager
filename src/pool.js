@@ -1,6 +1,7 @@
+import { readFileSync } from "fs";
 import { nanoid } from "nanoid";
 import * as db from "./db/pool.js";
-import * as railway from "./railway.js";
+import * as sprite from "./sprite.js";
 
 const POOL_API_KEY = process.env.POOL_API_KEY;
 const MIN_IDLE = parseInt(process.env.POOL_MIN_IDLE || "3", 10);
@@ -9,56 +10,64 @@ const STUCK_TIMEOUT_MS = parseInt(process.env.POOL_STUCK_TIMEOUT_MS || String(15
 const RECONCILE_INTERVAL_MS = parseInt(process.env.POOL_RECONCILE_INTERVAL_MS || String(5 * 60 * 1000), 10);
 let _lastReconcile = 0;
 
-function instanceEnvVars() {
-  return {
-    POOL_MODE: "true",
-    POOL_API_KEY: POOL_API_KEY,
-    POOL_AUTH_CHOICE: process.env.POOL_AUTH_CHOICE || "apiKey",
-    ANTHROPIC_API_KEY: process.env.INSTANCE_ANTHROPIC_API_KEY || "",
-    XMTP_ENV: process.env.INSTANCE_XMTP_ENV || "dev",
-    SETUP_PASSWORD: process.env.INSTANCE_SETUP_PASSWORD || "pool-managed",
-    PORT: "8080",
-  };
+function instanceEnvString() {
+  return [
+    `POOL_MODE=true`,
+    `POOL_API_KEY=${POOL_API_KEY}`,
+    `POOL_AUTH_CHOICE=${process.env.POOL_AUTH_CHOICE || "apiKey"}`,
+    `ANTHROPIC_API_KEY=${process.env.INSTANCE_ANTHROPIC_API_KEY || ""}`,
+    `XMTP_ENV=${process.env.INSTANCE_XMTP_ENV || "dev"}`,
+    `SETUP_PASSWORD=${process.env.INSTANCE_SETUP_PASSWORD || "pool-managed"}`,
+    `PORT=8080`,
+  ].join("\n");
 }
 
-// Create a single new Railway service and register it in the DB.
+// Create a single new Sprite and register it in the DB.
 export async function createInstance() {
   const id = nanoid(12);
   const name = `convos-agent-${id}`;
 
   console.log(`[pool] Creating instance ${name}...`);
 
-  // 1. Create Railway service from repo (env vars passed inline to avoid
-  //    a separate setVariables call that would trigger another main deploy)
-  const serviceId = await railway.createService(name, instanceEnvVars());
-  console.log(`[pool]   Railway service created: ${serviceId}`);
+  // 1. Create Sprite
+  const { url } = await sprite.createSprite(name);
+  console.log(`[pool]   Sprite created: ${url}`);
 
-  // 3. Generate public domain
-  const domain = await railway.createDomain(serviceId);
-  const url = `https://${domain}`;
-  console.log(`[pool]   Domain: ${url}`);
+  // 2. Run setup script inside the Sprite
+  const setupScript = readFileSync(
+    new URL("../scripts/sprite-setup.sh", import.meta.url), "utf-8"
+  );
+  await sprite.exec(name, setupScript);
+  console.log(`[pool]   Setup script complete`);
 
-  // 4. Insert into DB as 'provisioning'
-  await db.insertInstance({ id, railwayServiceId: serviceId, railwayUrl: url });
+  // 3. Write .env file for the convos-agent wrapper
+  const envVars = instanceEnvString();
+  await sprite.exec(name, `cat > /opt/convos-agent/.env << 'ENVEOF'\n${envVars}\nENVEOF`);
+  console.log(`[pool]   Environment written`);
+
+  // 4. Start the server (detached so it keeps running)
+  await sprite.startDetached(name, "cd /opt/convos-agent && node src/server.js");
+  console.log(`[pool]   Server starting`);
+
+  // 5. Insert into DB as 'provisioning'
+  await db.insertInstance({ id, spriteName: name, spriteUrl: url });
   console.log(`[pool]   Registered as provisioning`);
 
-  return { id, serviceId, url, name };
+  return { id, name, url };
 }
 
 // Check provisioning instances — if their /pool/status says ready, mark idle.
-// If stuck beyond STUCK_TIMEOUT_MS, verify against Railway and clean up dead ones.
+// If stuck beyond STUCK_TIMEOUT_MS, verify against Sprite API and clean up dead ones.
 export async function pollProvisioning() {
   const instances = await db.listProvisioning();
   for (const inst of instances) {
-    if (!inst.railway_url) continue;
+    if (!inst.sprite_url) continue;
     try {
-      const res = await fetch(`${inst.railway_url}/pool/status`, {
+      const res = await fetch(`${inst.sprite_url}/pool/status`, {
         headers: { Authorization: `Bearer ${POOL_API_KEY}` },
         signal: AbortSignal.timeout(5000),
       });
       if (!res.ok) {
-        // Service responded but not ready (e.g. Railway 404 "Application not found")
-        // Check if stuck beyond timeout
         const age = Date.now() - new Date(inst.created_at).getTime();
         if (age > STUCK_TIMEOUT_MS) {
           console.warn(`[pool] ${inst.id} stuck in provisioning for ${Math.round(age / 60000)}min (HTTP ${res.status}) — cleaning up`);
@@ -68,7 +77,7 @@ export async function pollProvisioning() {
       }
       const status = await res.json();
       if (status.ready && !status.provisioned) {
-        await db.markIdle(inst.id, inst.railway_url);
+        await db.markIdle(inst.id, inst.sprite_url);
         console.log(`[pool] ${inst.id} is now idle`);
       }
     } catch {
@@ -81,35 +90,37 @@ export async function pollProvisioning() {
   }
 }
 
-// Verify an instance against Railway and remove it if the service is gone or unreachable.
+// Verify an instance against Sprite API and remove it if gone or unreachable.
 async function cleanupInstance(inst, reason) {
-  const service = await railway.getServiceInfo(inst.railway_service_id);
-  if (!service) {
-    console.log(`[pool] ${inst.id} — Railway service gone, removing from DB (${reason})`);
+  const info = await sprite.getSpriteInfo(inst.sprite_name);
+  if (!info) {
+    console.log(`[pool] ${inst.id} — Sprite gone, removing from DB (${reason})`);
     await db.deleteInstance(inst.id);
     return;
   }
-  // Service exists on Railway but is unreachable — delete it
-  console.log(`[pool] ${inst.id} — deleting unreachable Railway service and removing from DB (${reason})`);
+  console.log(`[pool] ${inst.id} — deleting unreachable Sprite and removing from DB (${reason})`);
   try {
-    await railway.deleteService(inst.railway_service_id);
+    await sprite.deleteSprite(inst.sprite_name);
   } catch (err) {
-    console.warn(`[pool] ${inst.id} — failed to delete Railway service: ${err.message}`);
+    console.warn(`[pool] ${inst.id} — failed to delete Sprite: ${err.message}`);
   }
   await db.deleteInstance(inst.id);
 }
 
-// Reconcile DB state with Railway — remove orphaned entries where the service no longer exists.
+// Reconcile DB state with Sprites — remove orphaned entries where the Sprite no longer exists.
 export async function reconcile() {
   const instances = await db.listAll();
-  // Only check non-claimed instances (provisioning + idle) to avoid disrupting active agents
   const toCheck = instances.filter((i) => i.status !== "claimed");
+  if (toCheck.length === 0) return 0;
+
+  // Get all sprites at once (much faster than checking one by one)
+  const allSprites = await sprite.listSprites();
+  const spriteNames = new Set(allSprites.map((s) => s.name));
   let cleaned = 0;
 
   for (const inst of toCheck) {
-    const service = await railway.getServiceInfo(inst.railway_service_id);
-    if (!service) {
-      console.log(`[reconcile] ${inst.id} (${inst.status}) — Railway service gone, removing from DB`);
+    if (!spriteNames.has(inst.sprite_name)) {
+      console.log(`[reconcile] ${inst.id} (${inst.status}) — Sprite gone, removing from DB`);
       await db.deleteInstance(inst.id);
       cleaned++;
     }
@@ -169,8 +180,8 @@ export async function provision(agentId, instructions, joinUrl) {
   const provisionBody = { instructions, name: agentId };
   if (joinUrl) provisionBody.joinUrl = joinUrl;
 
-  console.log(`[pool] POST ${instance.railway_url}/pool/provision name="${provisionBody.name}"${joinUrl ? ` joinUrl="${joinUrl.slice(0, 40)}..."` : ""}`);
-  const res = await fetch(`${instance.railway_url}/pool/provision`, {
+  console.log(`[pool] POST ${instance.sprite_url}/pool/provision name="${provisionBody.name}"${joinUrl ? ` joinUrl="${joinUrl.slice(0, 40)}..."` : ""}`);
+  const res = await fetch(`${instance.sprite_url}/pool/provision`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${POOL_API_KEY}`,
@@ -194,17 +205,9 @@ export async function provision(agentId, instructions, joinUrl) {
     joinUrl: joinUrl || null,
   });
 
-  // 4. Rename the Railway service so it's identifiable in the dashboard
-  try {
-    await railway.renameService(instance.railway_service_id, `convos-agent-${agentId}`);
-    console.log(`[pool] Renamed ${instance.id} → convos-agent-${agentId}`);
-  } catch (err) {
-    console.warn(`[pool] Failed to rename ${instance.id}:`, err.message);
-  }
-
   console.log(`[pool] Provisioned ${instance.id}: ${result.joined ? "joined" : "created"} conversation ${result.conversationId}`);
 
-  // 5. Trigger backfill (don't await — fire and forget)
+  // 4. Trigger backfill (don't await — fire and forget)
   replenish().catch((err) => console.error("[pool] Backfill error:", err));
 
   return {
@@ -216,14 +219,14 @@ export async function provision(agentId, instructions, joinUrl) {
   };
 }
 
-// Drain idle instances from the pool — delete from Railway and remove from DB.
+// Drain idle instances from the pool — delete Sprites and remove from DB.
 export async function drainPool(count) {
   const idle = await db.listIdle(count);
   console.log(`[pool] Draining ${idle.length} idle instance(s)...`);
   const results = [];
   for (const inst of idle) {
     try {
-      await railway.deleteService(inst.railway_service_id);
+      await sprite.deleteSprite(inst.sprite_name);
       await db.deleteInstance(inst.id);
       results.push(inst.id);
       console.log(`[pool]   Drained ${inst.id}`);
@@ -234,7 +237,7 @@ export async function drainPool(count) {
   return results;
 }
 
-// Kill a launched instance — delete from Railway and remove from DB.
+// Kill a launched instance — delete Sprite and remove from DB.
 export async function killInstance(id) {
   const instances = await db.listAll();
   const inst = instances.find((i) => i.id === id);
@@ -243,10 +246,10 @@ export async function killInstance(id) {
   console.log(`[pool] Killing instance ${inst.id} (${inst.claimed_by})`);
 
   try {
-    await railway.deleteService(inst.railway_service_id);
-    console.log(`[pool]   Railway service deleted`);
+    await sprite.deleteSprite(inst.sprite_name);
+    console.log(`[pool]   Sprite deleted`);
   } catch (err) {
-    console.warn(`[pool]   Failed to delete Railway service:`, err.message);
+    console.warn(`[pool]   Failed to delete Sprite:`, err.message);
   }
 
   await db.deleteInstance(id);
