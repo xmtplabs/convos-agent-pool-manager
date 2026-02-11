@@ -831,7 +831,7 @@ app.get("/", (_req, res) => {
 
     async function killAgent(id,name){
       var confirmMsg=(POOL_ENV==='production'?'[PRODUCTION] ':'')+
-        'Are you sure you want to kill "'+name+'"? This will delete the Railway service permanently.';
+        'Are you sure you want to kill "'+name+'"? This will delete the Sprite permanently.';
       if(!confirm(confirmMsg))return;
       try{
         await killOne(id);
@@ -994,7 +994,7 @@ app.get("/api/pool/setup", requireAuth, async (_req, res) => {
         error: "No idle instances available. Try again in a few minutes.",
       });
     }
-    res.redirect(`${instance.railway_url}/setup`);
+    res.redirect(`${instance.sprite_url}/setup`);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -1025,7 +1025,7 @@ app.post("/api/pool/replenish", requireAuth, async (req, res) => {
   }
 });
 
-// Manually trigger reconciliation — verify DB against Railway and clean up orphans
+// Manually trigger reconciliation — verify DB against Sprites and clean up orphans
 app.post("/api/pool/reconcile", requireAuth, async (_req, res) => {
   try {
     const cleaned = await pool.reconcile();
