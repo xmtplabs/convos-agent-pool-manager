@@ -82,7 +82,10 @@ export async function startDetached(name, command) {
   console.log(`[sprite] Starting detached on ${name}: ${command.slice(0, 80)}`);
   const sprite = client().sprite(name);
   const cmd = sprite.createSession("bash", ["-c", command]);
-  // Drain streams to prevent back-pressure
+  // Drain streams and handle errors to prevent uncaught exceptions
   cmd.stdout.on("data", () => {});
   cmd.stderr.on("data", () => {});
+  cmd.on("error", (err) => {
+    console.warn(`[sprite] startDetached error on ${name}: ${err.message}`);
+  });
 }

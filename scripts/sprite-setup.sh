@@ -14,8 +14,8 @@ if ! command -v bun &> /dev/null; then
 fi
 echo "[2/6] Bun ready"
 
-# --- Enable corepack for pnpm ---
-corepack enable 2>/dev/null || true
+# --- Install pnpm (corepack not reliable on Sprite base image) ---
+npm install -g pnpm > /dev/null 2>&1
 
 # --- Clone and build OpenClaw ---
 OPENCLAW_BRANCH="${OPENCLAW_GIT_REF:-main}"
