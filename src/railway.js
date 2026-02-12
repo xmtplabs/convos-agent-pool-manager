@@ -52,8 +52,8 @@ export async function createService(name, variables = {}) {
   const rootDir = process.env.RAILWAY_SOURCE_ROOT_DIR;
   if (rootDir) {
     try {
-      await updateServiceInstance(serviceId, { rootDirectory: rootDir, autoDeploys: false });
-      console.log(`[railway]   Set rootDirectory: ${rootDir}, autoDeploys: false`);
+      await updateServiceInstance(serviceId, { rootDirectory: rootDir });
+      console.log(`[railway]   Set rootDirectory: ${rootDir}`);
     } catch (err) {
       console.warn(`[railway] Failed to set rootDirectory for ${serviceId}:`, err);
     }
@@ -114,6 +114,18 @@ export async function createService(name, variables = {}) {
       console.log(`[railway] Deployed ${repo}@${deployRef} (${sha.slice(0, 8)}) to ${serviceId}`);
     } catch (err) {
       console.warn(`[railway] Failed to deploy correct branch for ${serviceId}:`, err);
+    }
+
+    // Disconnect the repo so pushes don't auto-redeploy all agent instances.
+    // The correct commit is already deployed above; no further repo link needed.
+    try {
+      await gql(
+        `mutation($id: String!) { serviceDisconnect(id: $id) { id } }`,
+        { id: serviceId }
+      );
+      console.log(`[railway]   Disconnected repo (auto-deploys disabled)`);
+    } catch (err) {
+      console.warn(`[railway] Failed to disconnect repo for ${serviceId}:`, err);
     }
   }
 
