@@ -173,41 +173,49 @@ export async function provision(agentId, instructions, joinUrl) {
   // 2. Call OpenClaw gateway directly — one call writes instructions,
   //    creates XMTP identity, creates conversation, starts message stream.
   let result;
-  if (joinUrl) {
-    console.log(`[pool] POST ${instance.railway_url}/convos/join`);
-    const res = await fetch(`${instance.railway_url}/convos/join`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        inviteUrl: joinUrl,
-        profileName: agentId,
-        env: process.env.INSTANCE_XMTP_ENV || "dev",
-        instructions,
-      }),
-    });
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(`Join failed on ${instance.id}: ${res.status} ${text}`);
+  try {
+    if (joinUrl) {
+      console.log(`[pool] POST ${instance.railway_url}/convos/join`);
+      const res = await fetch(`${instance.railway_url}/convos/join`, {
+        method: "POST",
+        headers,
+        signal: AbortSignal.timeout(30_000),
+        body: JSON.stringify({
+          inviteUrl: joinUrl,
+          profileName: agentId,
+          env: process.env.INSTANCE_XMTP_ENV || "dev",
+          instructions,
+        }),
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`Join failed on ${instance.id} (agent=${agentId}): ${res.status} ${text}`);
+      }
+      result = await res.json();
+      result.joined = true;
+    } else {
+      console.log(`[pool] POST ${instance.railway_url}/convos/conversation`);
+      const res = await fetch(`${instance.railway_url}/convos/conversation`, {
+        method: "POST",
+        headers,
+        signal: AbortSignal.timeout(30_000),
+        body: JSON.stringify({
+          name: agentId,
+          env: process.env.INSTANCE_XMTP_ENV || "dev",
+          instructions,
+        }),
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`Create failed on ${instance.id} (agent=${agentId}): ${res.status} ${text}`);
+      }
+      result = await res.json();
+      result.joined = false;
     }
-    result = await res.json();
-    result.joined = true;
-  } else {
-    console.log(`[pool] POST ${instance.railway_url}/convos/conversation`);
-    const res = await fetch(`${instance.railway_url}/convos/conversation`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        name: agentId,
-        env: process.env.INSTANCE_XMTP_ENV || "dev",
-        instructions,
-      }),
-    });
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(`Create failed on ${instance.id}: ${res.status} ${text}`);
-    }
-    result = await res.json();
-    result.joined = false;
+  } catch (err) {
+    console.error(`[pool] Provision failed for ${instance.id} (agent=${agentId}), releasing claim:`, err.message);
+    await db.markIdle(instance.id, instance.railway_url);
+    throw err;
   }
 
   // 3. Store results in DB
