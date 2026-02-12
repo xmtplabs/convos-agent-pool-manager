@@ -9,14 +9,14 @@ const STUCK_TIMEOUT_MS = parseInt(process.env.POOL_STUCK_TIMEOUT_MS || String(15
 const RECONCILE_INTERVAL_MS = parseInt(process.env.POOL_RECONCILE_INTERVAL_MS || String(5 * 60 * 1000), 10);
 let _lastReconcile = 0;
 
+const IS_PRODUCTION = (process.env.POOL_ENVIRONMENT || "staging") === "production";
+
 function instanceEnvVars() {
   return {
-    POOL_MODE: "true",
-    POOL_API_KEY: POOL_API_KEY,
-    POOL_AUTH_CHOICE: process.env.POOL_AUTH_CHOICE || "apiKey",
     ANTHROPIC_API_KEY: process.env.INSTANCE_ANTHROPIC_API_KEY || "",
     XMTP_ENV: process.env.INSTANCE_XMTP_ENV || "dev",
-    SETUP_PASSWORD: process.env.INSTANCE_SETUP_PASSWORD || "pool-managed",
+    GATEWAY_AUTH_TOKEN: POOL_API_KEY,
+    OPENCLAW_GIT_REF: process.env.OPENCLAW_GIT_REF || (IS_PRODUCTION ? "main" : "staging"),
     PORT: "8080",
   };
 }
