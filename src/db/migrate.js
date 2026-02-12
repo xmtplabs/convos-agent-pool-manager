@@ -4,13 +4,16 @@ async function migrate() {
   await sql`
     CREATE TABLE IF NOT EXISTS pool_instances (
       id TEXT PRIMARY KEY,
-      railway_service_id TEXT NOT NULL,
-      railway_url TEXT,
+      sprite_name TEXT NOT NULL,
+      sprite_url TEXT,
       status TEXT NOT NULL DEFAULT 'provisioning',
+      checkpoint_id TEXT,
       claimed_by TEXT,
       claimed_at TIMESTAMPTZ,
       invite_url TEXT,
       conversation_id TEXT,
+      instructions TEXT,
+      join_url TEXT,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
@@ -21,50 +24,13 @@ async function migrate() {
     ON pool_instances (status)
   `;
 
-  // Rename column if upgrading from older schema
-  await sql`
-    DO $$
-    BEGIN
-      IF EXISTS (
-        SELECT 1 FROM information_schema.columns
-        WHERE table_name = 'pool_instances' AND column_name = 'claimed_by_concierge_id'
-      ) THEN
-        ALTER TABLE pool_instances RENAME COLUMN claimed_by_concierge_id TO claimed_by;
-      END IF;
-    END $$
-  `;
-
-  // Add instructions column if missing
-  await sql`
-    DO $$
-    BEGIN
-      IF NOT EXISTS (
-        SELECT 1 FROM information_schema.columns
-        WHERE table_name = 'pool_instances' AND column_name = 'instructions'
-      ) THEN
-        ALTER TABLE pool_instances ADD COLUMN instructions TEXT;
-      END IF;
-    END $$
-  `;
-
-  // Add join_url column if missing
-  await sql`
-    DO $$
-    BEGIN
-      IF NOT EXISTS (
-        SELECT 1 FROM information_schema.columns
-        WHERE table_name = 'pool_instances' AND column_name = 'join_url'
-      ) THEN
-        ALTER TABLE pool_instances ADD COLUMN join_url TEXT;
-      END IF;
-    END $$
-  `;
-
   console.log("Migration complete.");
+  await sql.end();
   process.exit(0);
 }
 
-migrate().catch((err) => {
+migrate().catch(async (err) => {
   console.error("Migration failed:", err);
+  await sql.end().catch(() => {});
   process.exit(1);
 });

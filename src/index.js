@@ -2,9 +2,18 @@ import express from "express";
 import * as pool from "./pool.js";
 import * as db from "./db/pool.js";
 
+// Fail fast if required env vars are missing
+const REQUIRED_ENV = ["SPRITE_TOKEN", "DATABASE_URL", "POOL_API_KEY"];
+for (const key of REQUIRED_ENV) {
+  if (!process.env[key]) {
+    console.error(`FATAL: ${key} is not set. Are you using --env-file=.env?`);
+    process.exit(1);
+  }
+}
+
 const PORT = parseInt(process.env.PORT || "3001", 10);
 const POOL_API_KEY = process.env.POOL_API_KEY;
-const POOL_ENVIRONMENT = process.env.POOL_ENVIRONMENT || "staging";
+const POOL_ENVIRONMENT = process.env.POOL_ENVIRONMENT || "dev";
 
 const app = express();
 app.disable("x-powered-by");
@@ -25,7 +34,7 @@ function requireAuth(req, res, next) {
 app.get("/healthz", (_req, res) => res.json({ ok: true }));
 
 // Version — check this to verify what code is deployed.
-const BUILD_VERSION = "2026-02-08T23:pool-v2";
+const BUILD_VERSION = "2026-02-11:openclaw-gateway-direct";
 app.get("/version", (_req, res) => res.json({ version: BUILD_VERSION, environment: POOL_ENVIRONMENT }));
 
 // Pool counts (no auth — used by the launch form)
@@ -58,15 +67,68 @@ app.delete("/api/pool/instances", requireAuth, async (_req, res) => {
   }
 });
 
-// Kill a launched instance
+// Recycle a launched instance (restore checkpoint → return to idle)
 app.delete("/api/pool/instances/:id", requireAuth, async (req, res) => {
   try {
-    await pool.killInstance(req.params.id);
+    await pool.recycleInstance(req.params.id);
     res.json({ ok: true });
   } catch (err) {
-    console.error("[api] Kill failed:", err);
+    console.error("[api] Recycle failed:", err);
     res.status(500).json({ error: err.message });
   }
+});
+
+// Permanently destroy an instance (delete Sprite + DB)
+app.delete("/api/pool/instances/:id/destroy", requireAuth, async (req, res) => {
+  try {
+    await pool.destroyInstance(req.params.id);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("[api] Destroy failed:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Debug: probe a sprite to see if the server is actually running
+app.get("/api/pool/debug/:id", requireAuth, async (req, res) => {
+  const sprite = await import("./sprite.js");
+  const instances = await db.listAll();
+  const inst = instances.find((i) => i.id === req.params.id);
+  if (!inst) return res.status(404).json({ error: "not found" });
+
+  const results = {};
+  try {
+    const ps = await sprite.exec(inst.sprite_name, "ps aux | grep -E 'node|PID' | head -10");
+    results.processes = ps.stdout?.trim();
+  } catch (err) { results.processes = `error: ${err.message}`; }
+
+  try {
+    const check = await sprite.exec(inst.sprite_name, `node -e "fetch('http://localhost:8080/convos/status').then(async r=>{const b=await r.text();console.log(JSON.stringify({status:r.status,body:b.slice(0,200)}))}).catch(e=>console.log(JSON.stringify({error:e.message})))"`);
+    results.localCheck = check.stdout?.trim();
+  } catch (err) { results.localCheck = `error: ${err.message}`; }
+
+  try {
+    const env = await sprite.exec(inst.sprite_name, "cat ~/.openclaw/.env 2>/dev/null || echo 'no .env'");
+    results.envExists = !env.stdout?.includes("no .env");
+  } catch (err) { results.envExists = `error: ${err.message}`; }
+
+  try {
+    const net = await sprite.exec(inst.sprite_name, "ss -tlnp 2>/dev/null || netstat -tlnp 2>/dev/null || echo 'no ss/netstat'");
+    results.listening = net.stdout?.trim();
+  } catch (err) { results.listening = `error: ${err.message}`; }
+
+  // Fetch raw sprite info from the API to see what URL it reports
+  try {
+    const token = process.env.SPRITE_TOKEN;
+    const apiRes = await fetch(`https://api.sprites.dev/v1/sprites/${inst.sprite_name}`, {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(5000),
+    });
+    results.apiStatus = apiRes.status;
+    results.apiBody = await apiRes.json().catch(() => apiRes.text());
+  } catch (err) { results.apiInfo = `error: ${err.message}`; }
+
+  res.json({ id: inst.id, name: inst.sprite_name, status: inst.status, url: inst.sprite_url, ...results });
 });
 
 // Dashboard page
@@ -578,6 +640,12 @@ app.get("/", (_req, res) => {
       vertical-align: middle;
     }
 
+    .env-badge.env-dev {
+      background: #E0E7FF;
+      border: 1px solid #C7D2FE;
+      color: #3730A3;
+    }
+
     .env-badge.env-staging {
       background: #FEF3C7;
       border: 1px solid #FDE68A;
@@ -585,12 +653,13 @@ app.get("/", (_req, res) => {
     }
 
     .env-badge.env-production {
-      background: #FEE2E2;
-      border: 1px solid #FECACA;
-      color: #991B1B;
+      background: #FFF0EE;
+      border: 1px solid #FDC9C2;
+      color: #FC4F37;
     }
 
-    body.env-production { border-top: 3px solid #DC2626; }
+    body.env-dev { border-top: 3px solid #6366F1; }
+    body.env-production { border-top: 3px solid #FC4F37; }
     body.env-staging { border-top: 3px solid #F59E0B; }
 
     @media (max-width: 768px) {
@@ -634,8 +703,8 @@ app.get("/", (_req, res) => {
     <div class="pool-bar">
       <div class="pool-bar-left">
         <span class="pool-bar-label">Pool</span>
-        <div class="pool-stat ready"><span class="dot"></span><span id="s-idle">-</span> ready</div>
         <div class="pool-stat starting"><span class="dot"></span><span id="s-prov">-</span> starting</div>
+        <div class="pool-stat ready"><span class="dot"></span><span id="s-idle">-</span> ready</div>
         <div class="pool-stat claimed"><span class="dot"></span><span id="s-alloc">-</span> claimed</div>
       </div>
       <div class="pool-bar-right">
@@ -776,7 +845,8 @@ app.get("/", (_req, res) => {
           '<div class="agent-instructions">'+instr+'</div>'+
           '<div class="agent-actions">'+
             '<button class="btn-secondary" data-qr="'+a.id+'">Show QR</button>'+
-            '<button class="btn-danger" data-kill="'+a.id+'">Kill</button>'+
+            '<button class="btn-secondary" data-recycle="'+a.id+'">Recycle</button>'+
+            '<button class="btn-danger" data-destroy="'+a.id+'">Destroy</button>'+
           '</div>'+
         '</div>';
       }).join('');
@@ -790,10 +860,16 @@ app.get("/", (_req, res) => {
         if(a)showQr(a.claimed_by||a.id,a.invite_url||'');
         return;
       }
-      var killId=e.target.getAttribute('data-kill');
-      if(killId){
-        var a2=agentsCache.find(function(x){return x.id===killId;});
-        if(a2)killAgent(a2.id,a2.claimed_by||a2.id);
+      var recycleId=e.target.getAttribute('data-recycle');
+      if(recycleId){
+        var a2=agentsCache.find(function(x){return x.id===recycleId;});
+        if(a2)recycleAgent(a2.id,a2.claimed_by||a2.id);
+        return;
+      }
+      var destroyId=e.target.getAttribute('data-destroy');
+      if(destroyId){
+        var a3=agentsCache.find(function(x){return x.id===destroyId;});
+        if(a3)destroyAgent(a3.id,a3.claimed_by||a3.id);
       }
     };
 
@@ -809,35 +885,47 @@ app.get("/", (_req, res) => {
     function closeModal(){modal.classList.remove('active');}
     modal.onclick=function(e){if(e.target===modal)closeModal();};
 
-    // Kill single agent
-    function markDestroying(id){
+    // Agent lifecycle actions
+    function markBusy(id,label){
       var card=document.getElementById('agent-'+id);
       if(card){
         card.classList.add('destroying');
         var uptime=card.querySelector('.agent-uptime');
-        if(uptime)uptime.textContent='Destroying...';
+        if(uptime)uptime.textContent=label;
       }
     }
 
-    async function killOne(id){
-      markDestroying(id);
-      var res=await fetch('/api/pool/instances/'+id,{method:'DELETE',headers:authHeaders});
-      var data=await res.json();
-      if(!res.ok)throw new Error(data.error||'Kill failed');
-      var card=document.getElementById('agent-'+id);
-      if(card)card.remove();
-      return id;
+    async function recycleAgent(id,name){
+      if(!confirm((POOL_ENV==='production'?'[PRODUCTION] ':'')+
+        'Recycle "'+name+'"? This will restore it to a clean state and return it to the pool.'))return;
+      markBusy(id,'Recycling...');
+      try{
+        var res=await fetch('/api/pool/instances/'+id,{method:'DELETE',headers:authHeaders});
+        var data=await res.json();
+        if(!res.ok)throw new Error(data.error||'Recycle failed');
+        var card=document.getElementById('agent-'+id);
+        if(card)card.remove();
+        refreshStatus();refreshFeed();
+      }catch(err){
+        alert('Failed to recycle: '+err.message);
+        var card=document.getElementById('agent-'+id);
+        if(card)card.classList.remove('destroying');
+      }
     }
 
-    async function killAgent(id,name){
-      var confirmMsg=(POOL_ENV==='production'?'[PRODUCTION] ':'')+
-        'Are you sure you want to kill "'+name+'"? This will delete the Railway service permanently.';
-      if(!confirm(confirmMsg))return;
+    async function destroyAgent(id,name){
+      if(!confirm((POOL_ENV==='production'?'[PRODUCTION] ':'')+
+        'Permanently destroy "'+name+'"? This will delete the Sprite entirely.'))return;
+      markBusy(id,'Destroying...');
       try{
-        await killOne(id);
+        var res=await fetch('/api/pool/instances/'+id+'/destroy',{method:'DELETE',headers:authHeaders});
+        var data=await res.json();
+        if(!res.ok)throw new Error(data.error||'Destroy failed');
+        var card=document.getElementById('agent-'+id);
+        if(card)card.remove();
         refreshStatus();
       }catch(err){
-        alert('Failed to kill: '+err.message);
+        alert('Failed to destroy: '+err.message);
         var card=document.getElementById('agent-'+id);
         if(card)card.classList.remove('destroying');
       }
@@ -871,7 +959,7 @@ app.get("/", (_req, res) => {
     f.onsubmit=async function(e){
       e.preventDefault();
       var agentName=f.name.value.trim();
-      var payload={agentId:agentName,instructions:f.instructions.value.trim()};
+      var payload={agentName:agentName,instructions:f.instructions.value.trim()};
       if(isJoinMode){
         var jUrl=joinUrlInput.value.trim();
         if(!jUrl){errorEl.textContent='Conversation link is required';errorEl.style.display='block';return;}
@@ -947,7 +1035,6 @@ app.get("/", (_req, res) => {
 
     // Initial load + polling
     refreshStatus();refreshFeed();
-    setInterval(function(){refreshStatus();refreshFeed();},15000);
   </script>
 </body>
 </html>`);
@@ -966,12 +1053,12 @@ app.get("/api/pool/status", requireAuth, async (_req, res) => {
 
 // Launch an agent — claim an idle instance and provision it with instructions.
 app.post("/api/pool/claim", requireAuth, async (req, res) => {
-  const { agentId, instructions, joinUrl } = req.body || {};
+  const { agentName, instructions, joinUrl } = req.body || {};
   if (!instructions || typeof instructions !== "string") {
     return res.status(400).json({ error: "instructions (string) is required" });
   }
-  if (!agentId || typeof agentId !== "string") {
-    return res.status(400).json({ error: "agentId (string) is required" });
+  if (!agentName || typeof agentName !== "string") {
+    return res.status(400).json({ error: "agentName (string) is required" });
   }
   if (joinUrl && typeof joinUrl !== "string") {
     return res.status(400).json({ error: "joinUrl must be a string if provided" });
@@ -984,7 +1071,7 @@ app.post("/api/pool/claim", requireAuth, async (req, res) => {
   }
 
   try {
-    const result = await pool.provision(agentId, instructions, joinUrl || undefined);
+    const result = await pool.provision(agentName, instructions, joinUrl || undefined);
     if (!result) {
       return res.status(503).json({
         error: "No idle instances available. Try again in a few minutes.",
@@ -992,22 +1079,7 @@ app.post("/api/pool/claim", requireAuth, async (req, res) => {
     }
     res.json(result);
   } catch (err) {
-    console.error("[api] Launch failed:", err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Redirect to the setup page of an idle instance
-app.get("/api/pool/setup", requireAuth, async (_req, res) => {
-  try {
-    const instance = await db.findIdle();
-    if (!instance) {
-      return res.status(503).json({
-        error: "No idle instances available. Try again in a few minutes.",
-      });
-    }
-    res.redirect(`${instance.railway_url}/setup`);
-  } catch (err) {
+    console.error("[api] Launch failed:", err.stack || err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -1037,7 +1109,7 @@ app.post("/api/pool/replenish", requireAuth, async (req, res) => {
   }
 });
 
-// Manually trigger reconciliation — verify DB against Railway and clean up orphans
+// Manually trigger reconciliation — verify DB against Sprites and clean up orphans
 app.post("/api/pool/reconcile", requireAuth, async (_req, res) => {
   try {
     const cleaned = await pool.reconcile();
@@ -1069,11 +1141,22 @@ setInterval(() => {
   pool.tick().catch((err) => console.error("[tick] Error:", err));
 }, TICK_INTERVAL);
 
-// Run initial tick on startup
-setTimeout(() => {
+// Heartbeat — keep Sprites awake and monitor health
+const HEARTBEAT_INTERVAL = parseInt(process.env.HEARTBEAT_INTERVAL_MS || "20000", 10);
+setInterval(() => {
+  pool.heartbeat().catch((err) => console.error("[heartbeat] Error:", err));
+}, HEARTBEAT_INTERVAL);
+
+// On startup: clean up orphaned provisioning instances, then run first tick.
+setTimeout(async () => {
+  try { await pool.cleanupOrphans(); } catch (err) { console.error("[startup] Orphan cleanup error:", err); }
   pool.tick().catch((err) => console.error("[tick] Initial tick error:", err));
 }, 2000);
 
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   console.log(`Pool manager listening on :${PORT}`);
+  try {
+    const counts = await db.countByStatus();
+    console.log(`[pool] Status: ${counts.provisioning} provisioning, ${counts.idle} idle, ${counts.claimed} claimed`);
+  } catch {}
 });
