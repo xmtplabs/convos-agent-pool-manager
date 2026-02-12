@@ -155,9 +155,9 @@ export async function replenish() {
   return results;
 }
 
-// Launch an agent — provision an idle instance with instructions.
+// Launch an agent — claim an idle instance and provision it directly via OpenClaw.
 // If joinUrl is provided, join an existing conversation instead of creating one.
-// Returns { inviteUrl, qrDataUrl, conversationId, joined } or null if no idle instances.
+// Returns { inviteUrl, conversationId, instanceId, joined } or null if no idle instances.
 export async function provision(agentId, instructions, joinUrl) {
   // 1. Atomically claim an idle instance
   const instance = await db.claimOne(agentId);
@@ -165,28 +165,52 @@ export async function provision(agentId, instructions, joinUrl) {
 
   console.log(`[pool] Launching ${instance.id} for agentId="${agentId}"${joinUrl ? " (join mode)" : ""}`);
 
-  // 2. Call /pool/provision on the instance
-  const provisionBody = { instructions, name: agentId };
-  if (joinUrl) provisionBody.joinUrl = joinUrl;
+  const headers = {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${POOL_API_KEY}`,
+  };
 
-  console.log(`[pool] POST ${instance.railway_url}/pool/provision name="${provisionBody.name}"${joinUrl ? ` joinUrl="${joinUrl.slice(0, 40)}..."` : ""}`);
-  const res = await fetch(`${instance.railway_url}/pool/provision`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${POOL_API_KEY}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(provisionBody),
-  });
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Provision failed on ${instance.id}: ${res.status} ${text}`);
+  // 2. Call OpenClaw gateway directly — one call writes instructions,
+  //    creates XMTP identity, creates conversation, starts message stream.
+  let result;
+  if (joinUrl) {
+    console.log(`[pool] POST ${instance.railway_url}/convos/join`);
+    const res = await fetch(`${instance.railway_url}/convos/join`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        inviteUrl: joinUrl,
+        profileName: agentId,
+        env: process.env.INSTANCE_XMTP_ENV || "dev",
+        instructions,
+      }),
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`Join failed on ${instance.id}: ${res.status} ${text}`);
+    }
+    result = await res.json();
+    result.joined = true;
+  } else {
+    console.log(`[pool] POST ${instance.railway_url}/convos/conversation`);
+    const res = await fetch(`${instance.railway_url}/convos/conversation`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        name: agentId,
+        env: process.env.INSTANCE_XMTP_ENV || "dev",
+        instructions,
+      }),
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`Create failed on ${instance.id}: ${res.status} ${text}`);
+    }
+    result = await res.json();
+    result.joined = false;
   }
 
-  const result = await res.json();
-
-  // 3. Store the invite URL, conversation ID, and instructions
+  // 3. Store results in DB
   await db.setClaimed(instance.id, {
     inviteUrl: result.inviteUrl || joinUrl || null,
     conversationId: result.conversationId,
@@ -194,7 +218,7 @@ export async function provision(agentId, instructions, joinUrl) {
     joinUrl: joinUrl || null,
   });
 
-  // 4. Rename the Railway service so it's identifiable in the dashboard
+  // 4. Rename the Railway service for dashboard visibility
   try {
     await railway.renameService(instance.railway_service_id, `convos-agent-${agentId}`);
     console.log(`[pool] Renamed ${instance.id} → convos-agent-${agentId}`);
@@ -209,10 +233,9 @@ export async function provision(agentId, instructions, joinUrl) {
 
   return {
     inviteUrl: result.inviteUrl || null,
-    qrDataUrl: result.qrDataUrl || null,
     conversationId: result.conversationId,
     instanceId: instance.id,
-    joined: !!result.joined,
+    joined: result.joined,
   };
 }
 
