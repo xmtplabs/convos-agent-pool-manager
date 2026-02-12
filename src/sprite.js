@@ -154,10 +154,11 @@ async function consumeNdjsonStream(response) {
 // Services auto-restart when a Sprite wakes from hibernation (unlike TTY sessions).
 // Uses the CLI because the REST API's PUT endpoint has a bug ("service name required").
 // Writes a wrapper script because the CLI's --args flag eats flags like "-c".
+// Deletes any existing service first to ensure a clean registration (e.g. after checkpoint restore).
 export async function registerService(spriteName, serviceName, command) {
   log.debug(`[sprite] Registering service "${serviceName}" on ${spriteName}`);
   const scriptPath = `/tmp/service-${serviceName}.sh`;
   await exec(spriteName, `cat > ${scriptPath} << 'SVCEOF'\n#!/usr/bin/env bash\n${command}\nSVCEOF\nchmod +x ${scriptPath}`);
-  await exec(spriteName, `/.sprite/bin/sprite-env services create ${serviceName} --cmd ${scriptPath}`);
+  await exec(spriteName, `/.sprite/bin/sprite-env services delete ${serviceName} 2>/dev/null; /.sprite/bin/sprite-env services create ${serviceName} --cmd ${scriptPath}`);
   log.debug(`[sprite]   Service "${serviceName}" registered`);
 }

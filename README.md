@@ -87,6 +87,17 @@ Drain all idle instances (useful after code changes):
 npm run drain:all
 ```
 
+## Deploy
+
+Push to `staging` or `main` to deploy. Railway auto-deploys the corresponding environment.
+
+```sh
+git push origin staging   # deploys to staging (convos-agents-dev.up.railway.app)
+git push origin main      # deploys to production (convos-agents.up.railway.app)
+```
+
+See [`docs/convos-claws-developer-workflow.md`](docs/convos-claws-developer-workflow.md) for full developer workflows.
+
 ## Environment variables
 
 | Variable | Description |

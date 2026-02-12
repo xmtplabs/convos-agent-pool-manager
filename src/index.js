@@ -1067,7 +1067,7 @@ app.post("/api/pool/claim", requireAuth, async (req, res) => {
     }
     res.json(result);
   } catch (err) {
-    console.error("[api] Launch failed:", err);
+    console.error("[api] Launch failed:", err.stack || err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -1135,8 +1135,9 @@ setInterval(() => {
   pool.heartbeat().catch((err) => console.error("[heartbeat] Error:", err));
 }, HEARTBEAT_INTERVAL);
 
-// Run initial tick on startup
-setTimeout(() => {
+// On startup: clean up orphaned provisioning instances, then run first tick.
+setTimeout(async () => {
+  try { await pool.cleanupOrphans(); } catch (err) { console.error("[startup] Orphan cleanup error:", err); }
   pool.tick().catch((err) => console.error("[tick] Initial tick error:", err));
 }, 2000);
 

@@ -20,14 +20,8 @@ async function retryExec(name, command, { retries = 2, delayMs = 3000 } = {}) {
     }
   }
 }
-const STUCK_TIMEOUT_MS = parseInt(process.env.POOL_STUCK_TIMEOUT_MS || String(15 * 60 * 1000), 10);
-const ORPHAN_TIMEOUT_MS = 2 * 60 * 1000; // 2 min grace period for orphaned provisioning instances
 const RECONCILE_INTERVAL_MS = parseInt(process.env.POOL_RECONCILE_INTERVAL_MS || String(5 * 60 * 1000), 10);
 let _lastReconcile = 0;
-
-// Track instance IDs actively being created by this process.
-// Provisioning instances NOT in this set are orphans from a previous process.
-const _activeCreations = new Set();
 
 // Circuit breaker: stop creating instances after repeated failures.
 let _consecutiveFailures = 0;
@@ -70,6 +64,9 @@ function openclawConfig() {
       auth: {
         token: "pool-managed",
       },
+      reload: {
+        mode: "off",
+      },
     },
   }, null, 2);
 }
@@ -81,7 +78,7 @@ async function startGateway(name, { retries = 2, delayMs = 3000 } = {}) {
   for (let attempt = 1; ; attempt++) {
     try {
       await sprite.registerService(name, "gateway",
-        "source ~/.openclaw/.env && OPENCLAW_HIDE_BANNER=1 openclaw gateway run --port 8080",
+        "source ~/.openclaw/.env && OPENCLAW_HIDE_BANNER=1 openclaw gateway run --port 8080 2>&1 | tee -a /tmp/gateway.log",
       );
       return;
     } catch (err) {
@@ -105,7 +102,6 @@ export async function createInstance() {
   const startTime = Date.now();
 
   log.info(`[pool] Creating ${id}`);
-  _activeCreations.add(id);
 
   // 1. Create Sprite
   const { url } = await sprite.createSprite(name);
@@ -124,7 +120,7 @@ export async function createInstance() {
     const setupScript = readFileSync(
       new URL("../scripts/sprite-setup.sh", import.meta.url), "utf-8"
     );
-    await sprite.exec(name, `export OPENCLAW_GIT_REF=${gitRef}\n${setupScript}`);
+    await retryExec(name, `export OPENCLAW_GIT_REF=${gitRef}\n${setupScript}`);
     log.debug(`[pool]   Phase 1 done (tools + install)`);
 
     // Phase 2: pnpm build
@@ -149,17 +145,6 @@ export async function createInstance() {
     await startGateway(name);
     log.debug(`[pool]   Gateway starting`);
 
-    // 6b. Diagnostic: wait then dump gateway log + process/port state
-    await new Promise((r) => setTimeout(r, 10000));
-    if (log.DEBUG) {
-      try {
-        const diag = await sprite.exec(name, "echo '=== GATEWAY LOG (last 30 lines) ===' && tail -30 /tmp/gateway.log 2>/dev/null || echo 'no log'; echo '=== PORTS ===' && ss -tlnp 2>/dev/null || netstat -tlnp 2>/dev/null");
-        log.debug(`[pool]   Gateway diag:\n${String(diag.stdout).trim()}`);
-      } catch (e) {
-        log.warn(`[pool]   Gateway diag failed: ${e.message}`);
-      }
-    }
-
     // 7. Wait for gateway to become ready
     await waitForGateway(url);
     log.debug(`[pool]   Gateway ready`);
@@ -175,10 +160,8 @@ export async function createInstance() {
 
     // 10. Mark idle with checkpoint
     await db.markIdle(id, url, checkpointId);
-    _activeCreations.delete(id);
     log.info(`[pool] ${id} ready (${formatElapsed(Date.now() - startTime)}) checkpoint=${checkpointId}`);
   } catch (err) {
-    _activeCreations.delete(id);
     const elapsed = formatElapsed(Date.now() - startTime);
     const r = err.result || {};
     if (r.exitCode !== undefined) {
@@ -215,46 +198,17 @@ async function waitForGateway(url, { timeoutMs = 120_000, intervalMs = 3000 } = 
   throw new Error(`Gateway at ${url} did not become ready within ${timeoutMs / 1000}s`);
 }
 
-// Check provisioning instances — if the gateway's /convos/status responds, mark idle.
-// If stuck beyond STUCK_TIMEOUT_MS, verify against Sprite API and clean up dead ones.
-export async function pollProvisioning() {
-  const instances = await db.listProvisioning();
-  if (instances.length > 0) {
-    log.debug(`[poll] Checking ${instances.length} provisioning instance(s)...`);
-  }
-  for (const inst of instances) {
-    if (!inst.sprite_url) continue;
-    const age = Date.now() - new Date(inst.created_at).getTime();
-    const ageStr = `${Math.round(age / 1000)}s`;
-    const isOrphan = !_activeCreations.has(inst.id);
-    const timeout = isOrphan ? ORPHAN_TIMEOUT_MS : STUCK_TIMEOUT_MS;
-    try {
-      const res = await fetch(`${inst.sprite_url}/convos/status`, {
-        signal: AbortSignal.timeout(5000),
-      });
-      if (!res.ok) {
-        // Unexpected HTTP error (not a timeout) — always log
-        log.info(`[poll] ${inst.id} (${ageStr}) — HTTP ${res.status}`);
-        if (age > timeout) {
-          log.warn(`[poll] ${inst.id} ${isOrphan ? "orphaned" : "stuck"} for ${Math.round(age / 60000)}min — cleaning up`);
-          await cleanupInstance(inst, isOrphan ? "orphaned after restart" : "stuck in provisioning");
-        }
-        continue;
-      }
-      const status = await res.json();
-      log.debug(`[poll] ${inst.id} (${ageStr}) — ready=${status.ready} conversation=${!!status.conversation}`);
-      if (status.ready && !status.conversation) {
-        await db.markIdle(inst.id, inst.sprite_url);
-        log.info(`[poll] ${inst.id} is now ready`);
-      }
-    } catch (err) {
-      if (age > timeout) {
-        log.warn(`[poll] ${inst.id} ${isOrphan ? "orphaned" : "stuck"} for ${Math.round(age / 60000)}min — cleaning up`);
-        await cleanupInstance(inst, isOrphan ? "orphaned after restart" : "stuck in provisioning");
-      } else {
-        log.debug(`[poll] ${inst.id} (${ageStr}) — ${err.message || "fetch error"}`);
-      }
-    }
+// Clean up provisioning instances orphaned by a previous process.
+// Called once at startup — any "provisioning" row in the DB has no
+// createInstance() coroutine driving it, so delete it.
+export async function cleanupOrphans() {
+  const orphans = await db.listProvisioning();
+  if (orphans.length === 0) return;
+  log.info(`[startup] Cleaning up ${orphans.length} orphaned provisioning instance(s)`);
+  for (const inst of orphans) {
+    await sprite.deleteSprite(inst.sprite_name).catch(() => {});
+    await db.deleteInstance(inst.id);
+    log.info(`[startup]   Removed orphan ${inst.id}`);
   }
 }
 
@@ -351,6 +305,48 @@ export async function replenish() {
   }
 }
 
+// Poll one-shot process-join-requests on a claimed instance.
+// Compensates for the --watch stream not delivering DMs in Sprite environments.
+// Runs in the background; stops after a join is approved or timeout.
+function pollJoinRequests(spriteName, conversationId, instanceId) {
+  const POLL_INTERVAL_MS = 5000;
+  const MAX_POLLS = 60; // 5 min max
+  let polls = 0;
+
+  const timer = setInterval(async () => {
+    polls++;
+    try {
+      const r = await sprite.exec(spriteName,
+        `timeout 10 node /openclaw/extensions/convos/node_modules/@convos/cli/bin/run.js conversations process-join-requests --conversation ${conversationId} --env ${XMTP_ENV} --json 2>/dev/null`);
+      const stdout = String(r.stdout).trim();
+      // Parse last JSON object from output
+      const lastBrace = stdout.lastIndexOf("}");
+      if (lastBrace !== -1) {
+        let depth = 0;
+        for (let i = lastBrace; i >= 0; i--) {
+          if (stdout[i] === "}") depth++;
+          else if (stdout[i] === "{") depth--;
+          if (depth === 0) {
+            const result = JSON.parse(stdout.slice(i, lastBrace + 1));
+            if (result.processed > 0) {
+              log.info(`[pool] ${instanceId}: join approved via poll (${result.processed} processed)`);
+              clearInterval(timer);
+              return;
+            }
+            break;
+          }
+        }
+      }
+    } catch (err) {
+      log.debug(`[pool] ${instanceId}: join poll error: ${err.message}`);
+    }
+    if (polls >= MAX_POLLS) {
+      log.debug(`[pool] ${instanceId}: join poll timeout after ${MAX_POLLS} polls`);
+      clearInterval(timer);
+    }
+  }, POLL_INTERVAL_MS);
+}
+
 // Launch an agent — provision an idle instance with instructions.
 // If joinUrl is provided, join an existing conversation instead of creating one.
 // Returns { inviteUrl, conversationId, joined } or null if no idle instances.
@@ -411,6 +407,13 @@ export async function provision(agentName, instructions, joinUrl) {
 
   log.info(`[pool] Provisioned ${instance.id}: ${result.joined ? "joined" : result.status === "waiting_for_acceptance" ? "waiting for acceptance" : "created"} conversation ${result.conversationId || "(pending)"}`);
 
+  // 4b. Background: poll one-shot process-join-requests until a join is approved.
+  // The --watch stream in the gateway subprocess doesn't reliably deliver DMs
+  // from new senders in the Sprite environment, so we compensate by running
+  // the batch processor periodically.
+  if (!joinUrl) {
+    pollJoinRequests(instance.sprite_name, result.conversationId, instance.id);
+  }
 
   // 5. Always start a 1-for-1 replacement (capped by MAX_TOTAL).
   const counts = await db.countByStatus();
@@ -564,7 +567,7 @@ export async function heartbeat() {
   }
 }
 
-// Run a single reconcile + poll + replenish cycle.
+// Run a single reconcile + replenish cycle.
 export async function tick() {
   // Reconcile periodically (every RECONCILE_INTERVAL_MS, not every tick)
   const now = Date.now();
@@ -572,6 +575,5 @@ export async function tick() {
     await reconcile();
     _lastReconcile = now;
   }
-  await pollProvisioning();
   await replenish();
 }

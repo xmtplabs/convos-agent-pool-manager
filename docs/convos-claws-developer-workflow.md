@@ -59,7 +59,7 @@ An Express server + Neon Postgres database that maintains a pool of pre-warmed S
 1. `sprite.createSprite(name)` — fresh Sprite from base Ubuntu image
 2. Run `scripts/sprite-setup.sh` via `sprite.exec()` — installs build tools, Bun, pnpm, clones and builds OpenClaw
 3. Write `~/.openclaw/openclaw.json` (API config, convos plugin, gateway auth) and `~/.openclaw/.env` (Anthropic API key) via `sprite.exec()`
-4. Start `openclaw gateway run --port 8080` via `sprite.startDetached()`
+4. Register `openclaw gateway run --port 8080` as a Sprite Service (auto-restarts on wake)
 5. Poll `GET /convos/status` until `{ ready: true }` (~30-60s)
 6. Verify `~/.convos/` does not exist (no XMTP state leaked before checkpoint)
 7. `sprite.createCheckpoint("golden")` — snapshot the clean state
@@ -77,7 +77,7 @@ An Express server + Neon Postgres database that maintains a pool of pre-warmed S
 ### Recycling (~15s, after conversation ends)
 
 1. `sprite.restoreCheckpoint(checkpointId)` — filesystem reset, processes killed
-2. Start `openclaw gateway run --port 8080` via `sprite.startDetached()`
+2. Re-register the gateway as a Sprite Service and start it
 3. Poll gateway until it responds with `{ ready: true }`
 4. Mark idle in DB — ready for the next claim
 
@@ -105,7 +105,7 @@ provisioning ──→ idle ──→ claimed ──→ recycled ──→ idle
 | Loop | Interval | What it does |
 |------|----------|--------------|
 | **Tick** | 30s | Poll provisioning instances for readiness, replenish pool to `POOL_MIN_IDLE` |
-| **Heartbeat** | 20s | Ping idle + claimed instances via `/convos/status`, clean up unreachable ones |
+| **Heartbeat** | 20s | HTTP ping idle + claimed instances. On failure: exec wake (Service restarts gateway) → clean up after 3 recovery attempts |
 | **Reconcile** | 5min | Verify DB records against Sprites API, purge orphaned entries |
 
 ---
@@ -156,12 +156,12 @@ Changes to instance lifecycle, API routes, dashboard UI, etc.
 
 ```
 1. Edit code in convos-agent-pool-manager
-2. Push to main (or feature branch → PR → main)
-3. Railway auto-deploys the pool manager service
-4. Test via the dashboard
+2. Push to staging branch → Railway auto-deploys staging
+3. Test via the staging dashboard
+4. When satisfied, merge to main → Railway auto-deploys production
 ```
 
-The pool manager runs on Railway. Pushing triggers an automatic redeploy. Existing Sprites are unaffected — only newly created instances pick up pool manager logic changes.
+The pool manager runs on Railway. Pushing to `staging` or `main` triggers an automatic redeploy of the corresponding environment. Existing Sprites are unaffected — only newly created instances pick up pool manager logic changes.
 
 ### C. Full stack change (both repos)
 
