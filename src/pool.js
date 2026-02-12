@@ -192,6 +192,9 @@ export async function provision(agentName, instructions, joinUrl) {
         throw new Error(`Join failed on ${instance.id} (agent=${agentName}): ${res.status} ${text}`);
       }
       result = await res.json();
+      if (result.conversationId == null) {
+        throw new Error(`OpenClaw API returned unexpected response format: missing conversationId (join mode)`);
+      }
       result.joined = true;
     } else {
       console.log(`[pool] POST ${instance.railway_url}/convos/conversation`);
@@ -211,6 +214,9 @@ export async function provision(agentName, instructions, joinUrl) {
         throw new Error(`Create failed on ${instance.id} (agent=${agentName}): ${res.status} ${text}`);
       }
       result = await res.json();
+      if (result.conversationId == null) {
+        throw new Error(`OpenClaw API returned unexpected response format: missing conversationId (create mode)`);
+      }
       result.joined = false;
     }
   } catch (err) {
