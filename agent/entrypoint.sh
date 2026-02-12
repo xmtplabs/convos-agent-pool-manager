@@ -24,6 +24,7 @@ cat > ~/.openclaw/openclaw.json << EOF
     "mode": "local",
     "port": 8080,
     "bind": "lan",
+    "auth": { "token": "${GATEWAY_AUTH_TOKEN:-changeme}" },
     "reload": { "mode": "off" }
   }
 }
