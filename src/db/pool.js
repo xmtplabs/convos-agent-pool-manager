@@ -109,3 +109,23 @@ export async function listIdle(limit) {
 export async function deleteInstance(id) {
   await sql`DELETE FROM pool_instances WHERE id = ${id}`;
 }
+
+export async function incrementHealthCheckFailures(id) {
+  const result = await sql`
+    UPDATE pool_instances
+    SET health_check_failures = COALESCE(health_check_failures, 0) + 1,
+        updated_at = NOW()
+    WHERE id = ${id}
+    RETURNING health_check_failures
+  `;
+  return result.rows[0]?.health_check_failures || 1;
+}
+
+export async function resetHealthCheckFailures(id) {
+  await sql`
+    UPDATE pool_instances
+    SET health_check_failures = 0,
+        updated_at = NOW()
+    WHERE id = ${id}
+  `;
+}
