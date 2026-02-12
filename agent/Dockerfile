@@ -34,7 +34,7 @@ FROM node:22-bookworm
 ENV NODE_ENV=production
 
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-    ca-certificates && rm -rf /var/lib/apt/lists/*
+    ca-certificates jq && rm -rf /var/lib/apt/lists/*
 
 COPY --from=openclaw-build /openclaw /openclaw
 

@@ -68,7 +68,11 @@ export async function createService(name, variables = {}) {
   //
   // Variables are passed inline to serviceCreate above so that
   // setVariables doesn't trigger another main deployment.
-  if (branch) {
+  //
+  // We also cancel-and-redeploy when rootDir is set (even without branch),
+  // because serviceCreate triggers deployment before updateServiceInstance
+  // sets rootDirectory.
+  if (branch || rootDir) {
     // Cancel the initial main deployment.
     try {
       const depData = await gql(
@@ -91,9 +95,10 @@ export async function createService(name, variables = {}) {
       console.warn(`[railway] Failed to cancel initial deployment for ${serviceId}:`, err);
     }
 
-    // Deploy the latest commit from the correct branch.
+    // Deploy the latest commit from the correct branch (or default branch).
+    const deployRef = branch || "HEAD";
     try {
-      const ghRes = await fetch(`https://api.github.com/repos/${repo}/commits/${branch}`, {
+      const ghRes = await fetch(`https://api.github.com/repos/${repo}/commits/${deployRef}`, {
         headers: { Accept: "application/vnd.github.v3+json" },
         signal: AbortSignal.timeout(10000),
       });
@@ -106,7 +111,7 @@ export async function createService(name, variables = {}) {
         }`,
         { serviceId, environmentId, commitSha: sha }
       );
-      console.log(`[railway] Deployed ${repo}@${branch} (${sha.slice(0, 8)}) to ${serviceId}`);
+      console.log(`[railway] Deployed ${repo}@${deployRef} (${sha.slice(0, 8)}) to ${serviceId}`);
     } catch (err) {
       console.warn(`[railway] Failed to deploy correct branch for ${serviceId}:`, err);
     }
