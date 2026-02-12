@@ -269,20 +269,17 @@ export async function reconcile() {
   const allSprites = await sprite.listSprites();
   const spriteNames = new Set(allSprites.map((s) => s.name));
   let cleaned = 0;
-  const byStatus = {};
 
   for (const inst of toCheck) {
     if (!spriteNames.has(inst.sprite_name)) {
-      log.debug(`[reconcile] ${inst.id} (${inst.status}) — Sprite gone, removing from DB`);
+      log.debug(`[reconcile] ${inst.id} — Sprite gone, purging DB record`);
       await db.deleteInstance(inst.id);
       cleaned++;
-      byStatus[inst.status] = (byStatus[inst.status] || 0) + 1;
     }
   }
 
   if (cleaned > 0) {
-    const breakdown = Object.entries(byStatus).map(([s, n]) => `${n} ${s}`).join(", ");
-    log.info(`[reconcile] Cleaned ${cleaned} orphaned instances (${breakdown})`);
+    log.info(`[reconcile] Purged ${cleaned} stale DB records`);
   }
   return cleaned;
 }
@@ -321,32 +318,21 @@ export async function replenish() {
 
   log.info(`[pool] Status: ${statusStr} — need ${canCreate}`);
   _lastStatusStr = statusStr;
-  const results = [];
+
+  // Fire all creations concurrently — each registers in DB immediately,
+  // so subsequent ticks won't double-count.
   for (let i = 0; i < canCreate; i++) {
-    // Re-check deficit before each creation — concurrent ticks may have filled slots
-    if (i > 0) {
-      const fresh = await db.countByStatus();
-      const freshDeficit = MIN_IDLE - (fresh.idle + fresh.provisioning);
-      if (freshDeficit <= 0) {
-        log.info(`[pool] Deficit filled by concurrent tick — stopping early`);
-        break;
-      }
-    }
-    try {
-      const inst = await createInstance();
-      results.push(inst);
-      _consecutiveFailures = 0;
-    } catch (err) {
-      _consecutiveFailures++;
-      log.error(`[pool] Failed to create instance (${_consecutiveFailures}/${MAX_CONSECUTIVE_FAILURES}):`, err);
-      if (_consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
-        _backoffUntil = Date.now() + BACKOFF_MS;
-        log.error(`[pool] Circuit breaker tripped — pausing instance creation for ${BACKOFF_MS / 1000}s`);
-        break;
-      }
-    }
+    createInstance()
+      .then(() => { _consecutiveFailures = 0; })
+      .catch((err) => {
+        _consecutiveFailures++;
+        log.error(`[pool] Failed to create instance (${_consecutiveFailures}/${MAX_CONSECUTIVE_FAILURES}):`, err);
+        if (_consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+          _backoffUntil = Date.now() + BACKOFF_MS;
+          log.error(`[pool] Circuit breaker tripped — pausing instance creation for ${BACKOFF_MS / 1000}s`);
+        }
+      });
   }
-  return results;
 }
 
 // Launch an agent — provision an idle instance with instructions.
