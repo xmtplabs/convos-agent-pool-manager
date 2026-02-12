@@ -86,6 +86,10 @@ export async function createCheckpoint(name, comment) {
   const s = client().sprite(name);
   const res = await s.createCheckpoint(comment);
   const id = await consumeNdjsonStream(res);
+  if (!id) {
+    console.error(`[sprite]   Checkpoint stream completed but no ID returned for ${name}`);
+    throw new Error(`Checkpoint creation on ${name} returned no ID`);
+  }
   console.log(`[sprite]   Checkpoint created: ${id}`);
   return id;
 }
@@ -126,6 +130,13 @@ async function consumeNdjsonStream(response) {
         const msg = JSON.parse(line);
         console.log(`[sprite]   ndjson: ${JSON.stringify(msg)}`);
         if (msg.id) lastId = msg.id;
+        // Sprites checkpoint API embeds the ID in info/complete data strings
+        if (msg.data) {
+          const idMatch = msg.data.match(/^\s*ID:\s+(\S+)/);
+          if (idMatch) lastId = idMatch[1];
+          const cpMatch = msg.data.match(/Checkpoint\s+(\S+)\s+created/);
+          if (cpMatch && !lastId) lastId = cpMatch[1];
+        }
         if (msg.status) {
           console.log(`[sprite]   checkpoint: ${msg.status}`);
         }
