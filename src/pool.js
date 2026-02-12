@@ -3,6 +3,7 @@ import { customAlphabet } from "nanoid";
 const nanoid = customAlphabet("0123456789abcdefghijklmnopqrstuvwxyz", 12);
 import * as db from "./db/pool.js";
 import * as sprite from "./sprite.js";
+import * as log from "./log.js";
 
 const MIN_IDLE = parseInt(process.env.POOL_MIN_IDLE || "3", 10);
 const MAX_TOTAL = parseInt(process.env.POOL_MAX_TOTAL || "10", 10);
@@ -14,14 +15,19 @@ async function retryExec(name, command, { retries = 2, delayMs = 3000 } = {}) {
       return await sprite.exec(name, command);
     } catch (err) {
       if (attempt > retries) throw err;
-      console.warn(`[pool] exec attempt ${attempt} failed on ${name}, retrying in ${delayMs}ms: ${err.message}`);
+      log.warn(`[pool] exec attempt ${attempt} failed on ${name}, retrying in ${delayMs}ms: ${err.message}`);
       await new Promise((r) => setTimeout(r, delayMs));
     }
   }
 }
 const STUCK_TIMEOUT_MS = parseInt(process.env.POOL_STUCK_TIMEOUT_MS || String(15 * 60 * 1000), 10);
+const ORPHAN_TIMEOUT_MS = 2 * 60 * 1000; // 2 min grace period for orphaned provisioning instances
 const RECONCILE_INTERVAL_MS = parseInt(process.env.POOL_RECONCILE_INTERVAL_MS || String(5 * 60 * 1000), 10);
 let _lastReconcile = 0;
+
+// Track instance IDs actively being created by this process.
+// Provisioning instances NOT in this set are orphans from a previous process.
+const _activeCreations = new Set();
 
 // Circuit breaker: stop creating instances after repeated failures.
 let _consecutiveFailures = 0;
@@ -70,20 +76,28 @@ async function startGateway(name) {
   await sprite.startDetached(name, "source ~/.openclaw/.env && OPENCLAW_HIDE_BANNER=1 openclaw gateway run --port 8080", { logLines: 50 });
 }
 
+// Format elapsed time as human-readable string (e.g. "4m 12s" or "45s").
+function formatElapsed(ms) {
+  const s = Math.round(ms / 1000);
+  return s >= 60 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${s}s`;
+}
+
 // Create a single new Sprite and register it in the DB.
 export async function createInstance() {
   const id = nanoid(12);
   const name = `convos-agent-${id}`;
+  const startTime = Date.now();
 
-  console.log(`[pool] Creating instance ${name}...`);
+  log.info(`[pool] Creating ${id}`);
+  _activeCreations.add(id);
 
   // 1. Create Sprite
   const { url } = await sprite.createSprite(name);
-  console.log(`[pool]   Sprite created: ${url}`);
+  log.debug(`[pool]   Sprite created: ${url}`);
 
   // 2. Register in DB immediately so tick() sees it as provisioning
   await db.insertInstance({ id, spriteName: name, spriteUrl: url });
-  console.log(`[pool]   Registered as provisioning`);
+  log.debug(`[pool]   Registered as provisioning`);
 
   // 3–9: Setup, config, env, start, wait, checkpoint — clean up on failure
   try {
@@ -95,42 +109,44 @@ export async function createInstance() {
       new URL("../scripts/sprite-setup.sh", import.meta.url), "utf-8"
     );
     await sprite.exec(name, `export OPENCLAW_GIT_REF=${gitRef}\n${setupScript}`);
-    console.log(`[pool]   Phase 1 done (tools + install)`);
+    log.debug(`[pool]   Phase 1 done (tools + install)`);
 
     // Phase 2: pnpm build
     const pathPrefix = 'export PATH="$(npm config get prefix)/bin:$HOME/.bun/bin:$PATH"';
     await retryExec(name, `${pathPrefix} && cd /openclaw && pnpm build 2>&1 | tail -20`);
-    console.log(`[pool]   Phase 2 done (build)`);
+    log.debug(`[pool]   Phase 2 done (build)`);
 
     // Phase 3: CLI wrapper + workspace
     await retryExec(name, `mkdir -p /usr/local/bin && cat > /usr/local/bin/openclaw << 'WRAPPER'\n#!/usr/bin/env bash\nexec node /openclaw/dist/entry.js "$@"\nWRAPPER\nchmod +x /usr/local/bin/openclaw && mkdir -p ~/.openclaw/workspace`);
-    console.log(`[pool]   Phase 3 done (CLI + workspace)`);
+    log.debug(`[pool]   Phase 3 done (CLI + workspace)`);
 
     // 4. Write openclaw.json config (API provider, convos plugin, gateway auth)
     const config = openclawConfig();
     await retryExec(name, `cat > ~/.openclaw/openclaw.json << 'CFGEOF'\n${config}\nCFGEOF`);
-    console.log(`[pool]   OpenClaw config written`);
+    log.debug(`[pool]   OpenClaw config written`);
 
     // 5. Write .env with ANTHROPIC_API_KEY (persists in checkpoint, sourced on gateway start)
     await retryExec(name, `cat > ~/.openclaw/.env << 'ENVEOF'\nANTHROPIC_API_KEY=${ANTHROPIC_API_KEY_VALUE}\nENVEOF`);
-    console.log(`[pool]   Environment written`);
+    log.debug(`[pool]   Environment written`);
 
     // 6. Start the gateway
     await startGateway(name);
-    console.log(`[pool]   Gateway starting`);
+    log.debug(`[pool]   Gateway starting`);
 
     // 6b. Diagnostic: wait then dump gateway log + process/port state
     await new Promise((r) => setTimeout(r, 10000));
-    try {
-      const diag = await sprite.exec(name, "echo '=== GATEWAY LOG (last 30 lines) ===' && tail -30 /tmp/gateway.log 2>/dev/null || echo 'no log'; echo '=== PORTS ===' && ss -tlnp 2>/dev/null || netstat -tlnp 2>/dev/null");
-      console.log(`[pool]   Gateway diag:\n${String(diag.stdout).trim()}`);
-    } catch (e) {
-      console.warn(`[pool]   Gateway diag failed: ${e.message}`);
+    if (log.DEBUG) {
+      try {
+        const diag = await sprite.exec(name, "echo '=== GATEWAY LOG (last 30 lines) ===' && tail -30 /tmp/gateway.log 2>/dev/null || echo 'no log'; echo '=== PORTS ===' && ss -tlnp 2>/dev/null || netstat -tlnp 2>/dev/null");
+        log.debug(`[pool]   Gateway diag:\n${String(diag.stdout).trim()}`);
+      } catch (e) {
+        log.warn(`[pool]   Gateway diag failed: ${e.message}`);
+      }
     }
 
     // 7. Wait for gateway to become ready
     await waitForGateway(url);
-    console.log(`[pool]   Gateway ready`);
+    log.debug(`[pool]   Gateway ready`);
 
     // 8. Verify no XMTP state leaked (must be clean for golden checkpoint)
     const convosCheck = await sprite.exec(name, "test -d ~/.convos && echo exists || echo clean");
@@ -140,19 +156,21 @@ export async function createInstance() {
 
     // 9. Take golden checkpoint
     const checkpointId = await sprite.createCheckpoint(name, "golden");
-    console.log(`[pool]   Golden checkpoint: ${checkpointId}`);
 
     // 10. Mark idle with checkpoint
     await db.markIdle(id, url, checkpointId);
-    console.log(`[pool]   Instance ${id} is ready`);
+    _activeCreations.delete(id);
+    log.info(`[pool] ${id} ready (${formatElapsed(Date.now() - startTime)}) checkpoint=${checkpointId}`);
   } catch (err) {
+    _activeCreations.delete(id);
+    const elapsed = formatElapsed(Date.now() - startTime);
     const r = err.result || {};
     if (r.exitCode !== undefined) {
       const stdoutLines = String(r.stdout || "").trim().split("\n");
       const tail = stdoutLines.slice(-5).join("\n  ");
-      console.error(`[pool]   Setup failed (exit ${r.exitCode}):\n  stdout (last 5):\n  ${tail}\n  stderr: ${String(r.stderr || "").trim()}`);
+      log.error(`[pool] ${id} setup failed (${elapsed}): exit ${r.exitCode}\n  stdout (last 5):\n  ${tail}\n  stderr: ${String(r.stderr || "").trim()}`);
     } else {
-      console.error(`[pool]   Instance setup failed: ${err.message}`);
+      log.error(`[pool] ${id} setup failed (${elapsed}): ${err.message}`);
     }
     // Clean up the failed sprite and DB entry
     await sprite.deleteSprite(name).catch(() => {});
@@ -186,35 +204,39 @@ async function waitForGateway(url, { timeoutMs = 120_000, intervalMs = 3000 } = 
 export async function pollProvisioning() {
   const instances = await db.listProvisioning();
   if (instances.length > 0) {
-    console.log(`[poll] Checking ${instances.length} provisioning instance(s)...`);
+    log.debug(`[poll] Checking ${instances.length} provisioning instance(s)...`);
   }
   for (const inst of instances) {
     if (!inst.sprite_url) continue;
     const age = Date.now() - new Date(inst.created_at).getTime();
     const ageStr = `${Math.round(age / 1000)}s`;
+    const isOrphan = !_activeCreations.has(inst.id);
+    const timeout = isOrphan ? ORPHAN_TIMEOUT_MS : STUCK_TIMEOUT_MS;
     try {
       const res = await fetch(`${inst.sprite_url}/convos/status`, {
         signal: AbortSignal.timeout(5000),
       });
       if (!res.ok) {
-        console.log(`[poll] ${inst.id} (${ageStr}) — HTTP ${res.status}`);
-        if (age > STUCK_TIMEOUT_MS) {
-          console.warn(`[poll] ${inst.id} stuck for ${Math.round(age / 60000)}min — cleaning up`);
-          await cleanupInstance(inst, "stuck in provisioning");
+        // Unexpected HTTP error (not a timeout) — always log
+        log.info(`[poll] ${inst.id} (${ageStr}) — HTTP ${res.status}`);
+        if (age > timeout) {
+          log.warn(`[poll] ${inst.id} ${isOrphan ? "orphaned" : "stuck"} for ${Math.round(age / 60000)}min — cleaning up`);
+          await cleanupInstance(inst, isOrphan ? "orphaned after restart" : "stuck in provisioning");
         }
         continue;
       }
       const status = await res.json();
-      console.log(`[poll] ${inst.id} (${ageStr}) — ready=${status.ready} conversation=${!!status.conversation}`);
+      log.debug(`[poll] ${inst.id} (${ageStr}) — ready=${status.ready} conversation=${!!status.conversation}`);
       if (status.ready && !status.conversation) {
         await db.markIdle(inst.id, inst.sprite_url);
-        console.log(`[poll] ${inst.id} is now idle`);
+        log.info(`[poll] ${inst.id} is now ready`);
       }
     } catch (err) {
-      console.log(`[poll] ${inst.id} (${ageStr}) — ${err.message || "fetch error"}`);
-      if (age > STUCK_TIMEOUT_MS) {
-        console.warn(`[poll] ${inst.id} stuck for ${Math.round(age / 60000)}min — cleaning up`);
-        await cleanupInstance(inst, "stuck in provisioning");
+      if (age > timeout) {
+        log.warn(`[poll] ${inst.id} ${isOrphan ? "orphaned" : "stuck"} for ${Math.round(age / 60000)}min — cleaning up`);
+        await cleanupInstance(inst, isOrphan ? "orphaned after restart" : "stuck in provisioning");
+      } else {
+        log.debug(`[poll] ${inst.id} (${ageStr}) — ${err.message || "fetch error"}`);
       }
     }
   }
@@ -224,15 +246,15 @@ export async function pollProvisioning() {
 async function cleanupInstance(inst, reason) {
   const info = await sprite.getSpriteInfo(inst.sprite_name);
   if (!info) {
-    console.log(`[pool] ${inst.id} — Sprite gone, removing from DB (${reason})`);
+    log.info(`[pool] ${inst.id} — Sprite gone, removing from DB (${reason})`);
     await db.deleteInstance(inst.id);
     return;
   }
-  console.log(`[pool] ${inst.id} — deleting unreachable Sprite and removing from DB (${reason})`);
+  log.info(`[pool] ${inst.id} — deleting unreachable Sprite and removing from DB (${reason})`);
   try {
     await sprite.deleteSprite(inst.sprite_name);
   } catch (err) {
-    console.warn(`[pool] ${inst.id} — failed to delete Sprite: ${err.message}`);
+    log.warn(`[pool] ${inst.id} — failed to delete Sprite: ${err.message}`);
   }
   await db.deleteInstance(inst.id);
 }
@@ -247,20 +269,26 @@ export async function reconcile() {
   const allSprites = await sprite.listSprites();
   const spriteNames = new Set(allSprites.map((s) => s.name));
   let cleaned = 0;
+  const byStatus = {};
 
   for (const inst of toCheck) {
     if (!spriteNames.has(inst.sprite_name)) {
-      console.log(`[reconcile] ${inst.id} (${inst.status}) — Sprite gone, removing from DB`);
+      log.debug(`[reconcile] ${inst.id} (${inst.status}) — Sprite gone, removing from DB`);
       await db.deleteInstance(inst.id);
       cleaned++;
+      byStatus[inst.status] = (byStatus[inst.status] || 0) + 1;
     }
   }
 
   if (cleaned > 0) {
-    console.log(`[reconcile] Cleaned ${cleaned} orphaned instance(s)`);
+    const breakdown = Object.entries(byStatus).map(([s, n]) => `${n} ${s}`).join(", ");
+    log.info(`[reconcile] Cleaned ${cleaned} orphaned instances (${breakdown})`);
   }
   return cleaned;
 }
+
+// Track last status string to suppress duplicate status lines.
+let _lastStatusStr = "";
 
 // Ensure pool has enough idle instances. Create new ones if needed.
 export async function replenish() {
@@ -268,41 +296,52 @@ export async function replenish() {
   const total = counts.provisioning + counts.idle + counts.claimed;
   const deficit = MIN_IDLE - (counts.idle + counts.provisioning);
 
-  console.log(
-    `[pool] Status: ${counts.idle} idle, ${counts.provisioning} provisioning, ${counts.claimed} claimed (total: ${total}, min_idle: ${MIN_IDLE}, max: ${MAX_TOTAL})`
-  );
+  const statusStr = `${counts.idle} ready, ${counts.provisioning} provisioning, ${counts.claimed} bound`;
 
   if (deficit <= 0) {
-    console.log(`[pool] Pool is healthy, no action needed`);
+    if (statusStr !== _lastStatusStr) {
+      log.info(`[pool] Status: ${statusStr}`);
+      _lastStatusStr = statusStr;
+    }
     return;
   }
 
   const canCreate = Math.min(deficit, MAX_TOTAL - total);
   if (canCreate <= 0) {
-    console.log(`[pool] At max capacity (${total}/${MAX_TOTAL}), cannot create more`);
+    log.info(`[pool] At max capacity (${total}/${MAX_TOTAL}), cannot create more`);
     return;
   }
 
   // Circuit breaker: skip creation if backing off after repeated failures
   if (Date.now() < _backoffUntil) {
     const remaining = Math.round((_backoffUntil - Date.now()) / 1000);
-    console.log(`[pool] Circuit breaker active — skipping creation (${remaining}s remaining)`);
+    log.info(`[pool] Circuit breaker active — skipping creation (${remaining}s remaining)`);
     return;
   }
 
-  console.log(`[pool] Creating ${canCreate} new instance(s)...`);
+  log.info(`[pool] Status: ${statusStr} — need ${canCreate}`);
+  _lastStatusStr = statusStr;
   const results = [];
   for (let i = 0; i < canCreate; i++) {
+    // Re-check deficit before each creation — concurrent ticks may have filled slots
+    if (i > 0) {
+      const fresh = await db.countByStatus();
+      const freshDeficit = MIN_IDLE - (fresh.idle + fresh.provisioning);
+      if (freshDeficit <= 0) {
+        log.info(`[pool] Deficit filled by concurrent tick — stopping early`);
+        break;
+      }
+    }
     try {
       const inst = await createInstance();
       results.push(inst);
       _consecutiveFailures = 0;
     } catch (err) {
       _consecutiveFailures++;
-      console.error(`[pool] Failed to create instance (${_consecutiveFailures}/${MAX_CONSECUTIVE_FAILURES}):`, err);
+      log.error(`[pool] Failed to create instance (${_consecutiveFailures}/${MAX_CONSECUTIVE_FAILURES}):`, err);
       if (_consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
         _backoffUntil = Date.now() + BACKOFF_MS;
-        console.error(`[pool] Circuit breaker tripped — pausing instance creation for ${BACKOFF_MS / 1000}s`);
+        log.error(`[pool] Circuit breaker tripped — pausing instance creation for ${BACKOFF_MS / 1000}s`);
         break;
       }
     }
@@ -318,16 +357,16 @@ export async function provision(agentName, instructions, joinUrl) {
   const instance = await db.claimOne(agentName);
   if (!instance) return null;
 
-  console.log(`[pool] Launching ${instance.id} for agent="${agentName}"${joinUrl ? " (join mode)" : ""}`);
+  log.info(`[pool] Launching ${instance.id} for agent="${agentName}"${joinUrl ? " (join mode)" : ""}`);
 
   // 2. Write INSTRUCTIONS.md to the workspace
   await retryExec(instance.sprite_name, `cat > ~/.openclaw/workspace/INSTRUCTIONS.md << 'INSTREOF'\n${instructions}\nINSTREOF`);
-  console.log(`[pool]   INSTRUCTIONS.md written`);
+  log.debug(`[pool]   INSTRUCTIONS.md written`);
 
   // 3. Create or join a conversation via the gateway
   let result;
   if (joinUrl) {
-    console.log(`[pool] POST ${instance.sprite_url}/convos/join profileName="${agentName}" joinUrl="${joinUrl.slice(0, 40)}..."`);
+    log.debug(`[pool] POST ${instance.sprite_url}/convos/join profileName="${agentName}" joinUrl="${joinUrl.slice(0, 40)}..."`);
     const res = await fetch(`${instance.sprite_url}/convos/join`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -344,7 +383,7 @@ export async function provision(agentName, instructions, joinUrl) {
     // status is "joined" or "waiting_for_acceptance"
     result.joined = result.status === "joined";
   } else {
-    console.log(`[pool] POST ${instance.sprite_url}/convos/conversation name="${agentName}"`);
+    log.debug(`[pool] POST ${instance.sprite_url}/convos/conversation name="${agentName}"`);
     const res = await fetch(`${instance.sprite_url}/convos/conversation`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -368,15 +407,15 @@ export async function provision(agentName, instructions, joinUrl) {
     joinUrl: joinUrl || null,
   });
 
-  console.log(`[pool] Provisioned ${instance.id}: ${result.joined ? "joined" : result.status === "waiting_for_acceptance" ? "waiting for acceptance" : "created"} conversation ${result.conversationId || "(pending)"}`);
+  log.info(`[pool] Provisioned ${instance.id}: ${result.joined ? "joined" : result.status === "waiting_for_acceptance" ? "waiting for acceptance" : "created"} conversation ${result.conversationId || "(pending)"}`);
 
 
   // 5. Always start a 1-for-1 replacement (capped by MAX_TOTAL).
   const counts = await db.countByStatus();
   const total = counts.provisioning + counts.idle + counts.claimed;
   if (total < MAX_TOTAL) {
-    console.log(`[pool] Starting 1-for-1 replacement (${total}/${MAX_TOTAL})`);
-    createInstance().catch((err) => console.error("[pool] Replacement error:", err));
+    log.info(`[pool] Starting 1-for-1 replacement (${total}/${MAX_TOTAL})`);
+    createInstance().catch((err) => log.error("[pool] Replacement error:", err));
   }
 
   return {
@@ -392,16 +431,16 @@ export async function provision(agentName, instructions, joinUrl) {
 // Drain idle instances from the pool — permanently destroy Sprites.
 export async function drainPool(count) {
   const idle = await db.listIdle(count);
-  console.log(`[pool] Draining ${idle.length} idle instance(s)...`);
+  log.info(`[pool] Draining ${idle.length} idle instance(s)...`);
   const results = [];
   for (const inst of idle) {
     try {
       await sprite.deleteSprite(inst.sprite_name);
       await db.deleteInstance(inst.id);
       results.push(inst.id);
-      console.log(`[pool]   Drained ${inst.id}`);
+      log.info(`[pool]   Drained ${inst.id}`);
     } catch (err) {
-      console.error(`[pool]   Failed to drain ${inst.id}:`, err.message);
+      log.error(`[pool]   Failed to drain ${inst.id}:`, err.message);
     }
   }
   return results;
@@ -414,31 +453,31 @@ export async function recycleInstance(id) {
   const inst = instances.find((i) => i.id === id);
   if (!inst) throw new Error(`Instance ${id} not found`);
 
-  console.log(`[pool] Recycling instance ${inst.id} (${inst.claimed_by})`);
+  log.info(`[pool] Recycling instance ${inst.id} (${inst.claimed_by})`);
 
   if (!inst.checkpoint_id) {
-    console.warn(`[pool]   No checkpoint — falling back to destroy`);
+    log.warn(`[pool]   No checkpoint — falling back to destroy`);
     return destroyInstance(id);
   }
 
   try {
     // 1. Restore filesystem to golden checkpoint (kills all processes)
     await sprite.restoreCheckpoint(inst.sprite_name, inst.checkpoint_id);
-    console.log(`[pool]   Checkpoint restored`);
+    log.info(`[pool]   Checkpoint restored`);
 
     // 2. Restart the gateway
     await startGateway(inst.sprite_name);
-    console.log(`[pool]   Gateway restarting`);
+    log.info(`[pool]   Gateway restarting`);
 
     // 3. Wait for gateway to come up
     await waitForGateway(inst.sprite_url, { timeoutMs: 60_000 });
-    console.log(`[pool]   Gateway ready`);
+    log.info(`[pool]   Gateway ready`);
 
     // 4. Mark idle (clears claimed_by, conversation_id, etc.)
     await db.markIdle(inst.id, inst.sprite_url);
-    console.log(`[pool]   Instance ${inst.id} recycled → idle`);
+    log.info(`[pool]   Instance ${inst.id} recycled → ready`);
   } catch (err) {
-    console.error(`[pool]   Recycle failed: ${err.message} — destroying`);
+    log.error(`[pool]   Recycle failed: ${err.message} — destroying`);
     await destroyInstance(id);
   }
 }
@@ -449,20 +488,20 @@ export async function destroyInstance(id) {
   const inst = instances.find((i) => i.id === id);
   if (!inst) throw new Error(`Instance ${id} not found`);
 
-  console.log(`[pool] Destroying instance ${inst.id} (${inst.claimed_by})`);
+  log.info(`[pool] Destroying instance ${inst.id} (${inst.claimed_by})`);
 
   try {
     await sprite.deleteSprite(inst.sprite_name);
-    console.log(`[pool]   Sprite deleted`);
+    log.info(`[pool]   Sprite deleted`);
   } catch (err) {
-    console.warn(`[pool]   Failed to delete Sprite:`, err.message);
+    log.warn(`[pool]   Failed to delete Sprite:`, err.message);
   }
 
   await db.deleteInstance(id);
-  console.log(`[pool]   Removed from DB`);
+  log.info(`[pool]   Removed from DB`);
 
   // Trigger backfill
-  replenish().catch((err) => console.error("[pool] Backfill error:", err));
+  replenish().catch((err) => log.error("[pool] Backfill error:", err));
 }
 
 // Heartbeat — ping all non-provisioning instances to keep Sprites awake.
@@ -488,16 +527,16 @@ export async function heartbeat() {
     } catch (err) {
       const fails = (_failCounts.get(inst.id) || 0) + 1;
       _failCounts.set(inst.id, fails);
-      console.warn(`[heartbeat] ${inst.id} (${inst.status}) failed ping ${fails}/${MAX_HEARTBEAT_FAILURES}: ${err.message}`);
+      log.warn(`[heartbeat] ${inst.id} (${inst.status}) failed ping ${fails}/${MAX_HEARTBEAT_FAILURES}: ${err.message}`);
 
       if (fails >= MAX_HEARTBEAT_FAILURES) {
-        console.error(`[heartbeat] ${inst.id} unreachable — cleaning up`);
+        log.error(`[heartbeat] ${inst.id} unreachable — cleaning up`);
         _failCounts.delete(inst.id);
 
         // Check if the Sprite actually exists before deciding what to do
         const info = await sprite.getSpriteInfo(inst.sprite_name);
         if (!info) {
-          console.log(`[heartbeat] ${inst.id} — Sprite gone, removing from DB`);
+          log.info(`[heartbeat] ${inst.id} — Sprite gone, removing from DB`);
           await db.deleteInstance(inst.id);
         } else if (inst.status === "idle") {
           await cleanupInstance(inst, "heartbeat failure");
@@ -505,10 +544,10 @@ export async function heartbeat() {
           // Attempt to restart the gateway on the claimed Sprite
           try {
             await startGateway(inst.sprite_name);
-            console.log(`[heartbeat] ${inst.id} — gateway restarted`);
+            log.info(`[heartbeat] ${inst.id} — gateway restarted`);
             _failCounts.delete(inst.id);
           } catch {
-            console.error(`[heartbeat] ${inst.id} — restart failed, cleaning up`);
+            log.error(`[heartbeat] ${inst.id} — restart failed, cleaning up`);
             await cleanupInstance(inst, "heartbeat failure + restart failed");
           }
         }

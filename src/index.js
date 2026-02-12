@@ -4,7 +4,7 @@ import * as db from "./db/pool.js";
 
 const PORT = parseInt(process.env.PORT || "3001", 10);
 const POOL_API_KEY = process.env.POOL_API_KEY;
-const POOL_ENVIRONMENT = process.env.POOL_ENVIRONMENT || "staging";
+const POOL_ENVIRONMENT = process.env.POOL_ENVIRONMENT || "dev";
 
 const app = express();
 app.disable("x-powered-by");
@@ -631,6 +631,12 @@ app.get("/", (_req, res) => {
       vertical-align: middle;
     }
 
+    .env-badge.env-dev {
+      background: #E0E7FF;
+      border: 1px solid #C7D2FE;
+      color: #3730A3;
+    }
+
     .env-badge.env-staging {
       background: #FEF3C7;
       border: 1px solid #FDE68A;
@@ -638,12 +644,13 @@ app.get("/", (_req, res) => {
     }
 
     .env-badge.env-production {
-      background: #FEE2E2;
-      border: 1px solid #FECACA;
-      color: #991B1B;
+      background: #FFF0EE;
+      border: 1px solid #FDC9C2;
+      color: #FC4F37;
     }
 
-    body.env-production { border-top: 3px solid #DC2626; }
+    body.env-dev { border-top: 3px solid #6366F1; }
+    body.env-production { border-top: 3px solid #FC4F37; }
     body.env-staging { border-top: 3px solid #F59E0B; }
 
     @media (max-width: 768px) {
@@ -1013,7 +1020,6 @@ app.get("/", (_req, res) => {
 
     // Initial load + polling
     refreshStatus();refreshFeed();
-    setInterval(function(){refreshStatus();refreshFeed();},15000);
   </script>
 </body>
 </html>`);
@@ -1125,6 +1131,10 @@ setTimeout(() => {
   pool.tick().catch((err) => console.error("[tick] Initial tick error:", err));
 }, 2000);
 
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   console.log(`Pool manager listening on :${PORT}`);
+  try {
+    const counts = await db.countByStatus();
+    console.log(`[pool] Status: ${counts.idle} ready, ${counts.provisioning} provisioning, ${counts.claimed} bound`);
+  } catch {}
 });

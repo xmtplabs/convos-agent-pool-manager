@@ -1,4 +1,5 @@
 import { SpritesClient } from "@fly/sprites";
+import * as log from "./log.js";
 
 let _client;
 function client() {
@@ -13,7 +14,7 @@ function client() {
 // Create a new sprite and set its URL to public.
 // Returns { name, url } where url is the public HTTPS URL from the API.
 export async function createSprite(name) {
-  console.log(`[sprite] Creating sprite: ${name}`);
+  log.debug(`[sprite] Creating sprite: ${name}`);
   await client().createSprite(name);
 
   // Make the sprite URL publicly accessible and read back the assigned URL
@@ -30,18 +31,18 @@ export async function createSprite(name) {
     const body = await urlRes.text().catch(() => "");
     throw new Error(`url_settings PUT failed: ${urlRes.status} ${body}`);
   }
-  const info = await urlRes.json();
-  const url = info.url;
+  const spriteInfo = await urlRes.json();
+  const url = spriteInfo.url;
   if (!url) {
     throw new Error(`Sprite API did not return a URL for ${name}`);
   }
-  console.log(`[sprite]   URL: ${url}`);
+  log.debug(`[sprite]   URL: ${url}`);
   return { name, url };
 }
 
 // Delete a sprite by name. No-op if already gone.
 export async function deleteSprite(name) {
-  console.log(`[sprite] Deleting sprite: ${name}`);
+  log.debug(`[sprite] Deleting sprite: ${name}`);
   try {
     await client().deleteSprite(name);
   } catch (err) {
@@ -69,7 +70,8 @@ export async function listSprites(prefix = "convos-agent-") {
 // Execute a shell command inside a sprite. Waits for completion.
 // Returns { stdout, stderr, exitCode }.
 export async function exec(name, command) {
-  console.log(`[sprite] exec on ${name}: ${command.slice(0, 80)}${command.length > 80 ? "..." : ""}`);
+  const safeCmd = command.replace(/(?:API_KEY|SECRET|TOKEN)=\S+/gi, (m) => m.split("=")[0] + "=***");
+  log.debug(`[sprite] exec on ${name}: ${safeCmd.slice(0, 80)}${safeCmd.length > 80 ? "..." : ""}`);
   const sprite = client().sprite(name);
   const result = await sprite.execFile("bash", ["-c", command]);
   return {
@@ -82,26 +84,26 @@ export async function exec(name, command) {
 // Create a checkpoint of the sprite's current state.
 // Consumes the NDJSON response stream and returns the checkpoint ID (e.g. "v0").
 export async function createCheckpoint(name, comment) {
-  console.log(`[sprite] Creating checkpoint on ${name}${comment ? `: ${comment}` : ""}`);
+  log.debug(`[sprite] Creating checkpoint on ${name}${comment ? `: ${comment}` : ""}`);
   const s = client().sprite(name);
   const res = await s.createCheckpoint(comment);
   const id = await consumeNdjsonStream(res);
   if (!id) {
-    console.error(`[sprite]   Checkpoint stream completed but no ID returned for ${name}`);
+    log.error(`[sprite]   Checkpoint stream completed but no ID returned for ${name}`);
     throw new Error(`Checkpoint creation on ${name} returned no ID`);
   }
-  console.log(`[sprite]   Checkpoint created: ${id}`);
+  log.debug(`[sprite]   Checkpoint created: ${id}`);
   return id;
 }
 
 // Restore a sprite to a previously saved checkpoint.
 // Kills all running processes and resets filesystem state.
 export async function restoreCheckpoint(name, checkpointId) {
-  console.log(`[sprite] Restoring checkpoint ${checkpointId} on ${name}`);
+  log.debug(`[sprite] Restoring checkpoint ${checkpointId} on ${name}`);
   const s = client().sprite(name);
   const res = await s.restoreCheckpoint(checkpointId);
   await consumeNdjsonStream(res);
-  console.log(`[sprite]   Checkpoint restored`);
+  log.debug(`[sprite]   Checkpoint restored`);
 }
 
 // List all checkpoints for a sprite.
@@ -128,7 +130,7 @@ async function consumeNdjsonStream(response) {
       if (!line.trim()) continue;
       try {
         const msg = JSON.parse(line);
-        console.log(`[sprite]   ndjson: ${JSON.stringify(msg)}`);
+        log.debug(`[sprite]   ndjson: ${JSON.stringify(msg)}`);
         if (msg.id) lastId = msg.id;
         // Sprites checkpoint API embeds the ID in info/complete data strings
         if (msg.data) {
@@ -138,7 +140,7 @@ async function consumeNdjsonStream(response) {
           if (cpMatch && !lastId) lastId = cpMatch[1];
         }
         if (msg.status) {
-          console.log(`[sprite]   checkpoint: ${msg.status}`);
+          log.debug(`[sprite]   checkpoint: ${msg.status}`);
         }
       } catch {
         // ignore non-JSON lines
@@ -152,7 +154,7 @@ async function consumeNdjsonStream(response) {
 // Returns immediately — the process runs in the background.
 // Set logLines > 0 to capture initial output for debugging.
 export async function startDetached(name, command, { logLines = 0 } = {}) {
-  console.log(`[sprite] Starting detached on ${name}: ${command.slice(0, 80)}`);
+  log.debug(`[sprite] Starting detached on ${name}: ${command.slice(0, 80)}`);
   const s = client().sprite(name);
   const cmd = s.createSession("bash", ["-c", command]);
   let logged = 0;
@@ -160,7 +162,7 @@ export async function startDetached(name, command, { logLines = 0 } = {}) {
     if (logged >= logLines) return;
     for (const line of chunk.toString().split("\n")) {
       if (line.trim() && logged < logLines) {
-        console.log(`[sprite]   ${name} ${stream}: ${line.trim()}`);
+        log.debug(`[sprite]   ${name} ${stream}: ${line.trim()}`);
         logged++;
       }
     }
@@ -168,6 +170,6 @@ export async function startDetached(name, command, { logLines = 0 } = {}) {
   cmd.stdout.on("data", logLines > 0 ? (d) => logChunk("out", d) : () => {});
   cmd.stderr.on("data", logLines > 0 ? (d) => logChunk("err", d) : () => {});
   cmd.on("error", (err) => {
-    console.warn(`[sprite] startDetached error on ${name}: ${err.message}`);
+    log.warn(`[sprite] startDetached error on ${name}: ${err.message}`);
   });
 }
