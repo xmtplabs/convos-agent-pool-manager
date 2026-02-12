@@ -23,6 +23,12 @@ const STUCK_TIMEOUT_MS = parseInt(process.env.POOL_STUCK_TIMEOUT_MS || String(15
 const RECONCILE_INTERVAL_MS = parseInt(process.env.POOL_RECONCILE_INTERVAL_MS || String(5 * 60 * 1000), 10);
 let _lastReconcile = 0;
 
+// Circuit breaker: stop creating instances after repeated failures.
+let _consecutiveFailures = 0;
+let _backoffUntil = 0;
+const MAX_CONSECUTIVE_FAILURES = 3;
+const BACKOFF_MS = 5 * 60 * 1000; // 5 minutes
+
 const XMTP_ENV = process.env.INSTANCE_XMTP_ENV || "dev";
 const ANTHROPIC_API_KEY_VALUE = process.env.INSTANCE_ANTHROPIC_API_KEY || "";
 
@@ -277,14 +283,28 @@ export async function replenish() {
     return;
   }
 
+  // Circuit breaker: skip creation if backing off after repeated failures
+  if (Date.now() < _backoffUntil) {
+    const remaining = Math.round((_backoffUntil - Date.now()) / 1000);
+    console.log(`[pool] Circuit breaker active — skipping creation (${remaining}s remaining)`);
+    return;
+  }
+
   console.log(`[pool] Creating ${canCreate} new instance(s)...`);
   const results = [];
   for (let i = 0; i < canCreate; i++) {
     try {
       const inst = await createInstance();
       results.push(inst);
+      _consecutiveFailures = 0;
     } catch (err) {
-      console.error(`[pool] Failed to create instance:`, err);
+      _consecutiveFailures++;
+      console.error(`[pool] Failed to create instance (${_consecutiveFailures}/${MAX_CONSECUTIVE_FAILURES}):`, err);
+      if (_consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+        _backoffUntil = Date.now() + BACKOFF_MS;
+        console.error(`[pool] Circuit breaker tripped — pausing instance creation for ${BACKOFF_MS / 1000}s`);
+        break;
+      }
     }
   }
   return results;
