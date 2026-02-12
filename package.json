@@ -7,7 +7,7 @@
   },
   "scripts": {
     "dev": "node --env-file=.env --watch src/index.js",
-    "start": "node src/index.js",
+    "start": "node --env-file=.env src/index.js",
     "test": "node --env-file=.env --test src/**/*.test.js",
     "db:migrate": "node --env-file=.env src/db/migrate.js",
     "drain:all": "node --env-file=.env scripts/drain-sprites.js"

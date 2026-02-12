@@ -74,9 +74,22 @@ function openclawConfig() {
   }, null, 2);
 }
 
-// Start the openclaw gateway on a Sprite. Used after setup and after checkpoint restore.
-async function startGateway(name) {
-  await sprite.startDetached(name, "source ~/.openclaw/.env && OPENCLAW_HIDE_BANNER=1 openclaw gateway run --port 8080", { logLines: 50 });
+// Register the openclaw gateway as a Sprite Service.
+// Services auto-restart on wake, so the gateway survives hibernation.
+// Retries on transient network errors since this is a remote API call.
+async function startGateway(name, { retries = 2, delayMs = 3000 } = {}) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await sprite.registerService(name, "gateway",
+        "source ~/.openclaw/.env && OPENCLAW_HIDE_BANNER=1 openclaw gateway run --port 8080",
+      );
+      return;
+    } catch (err) {
+      if (attempt > retries) throw err;
+      log.warn(`[pool] startGateway attempt ${attempt} failed on ${name}, retrying in ${delayMs}ms: ${err.message}`);
+      await new Promise((r) => setTimeout(r, delayMs));
+    }
+  }
 }
 
 // Format elapsed time as human-readable string (e.g. "4m 12s" or "45s").
@@ -493,16 +506,61 @@ export async function destroyInstance(id) {
   replenish().catch((err) => log.error("[pool] Backfill error:", err));
 }
 
-// Heartbeat — wake all non-provisioning Sprites to prevent sleep.
-// Uses sprite.exec (hypervisor-level) rather than HTTP, so it works even
-// when the gateway process isn't responding. Health monitoring is handled
-// separately by reconcile() on a 5-min cycle.
+// Heartbeat — keep Sprites awake and recover or remove dead instances.
+//
+// Normal case: HTTP ping keeps the Sprite awake, gateway stays running.
+// Recovery case: HTTP ping fails → exec wakes the Sprite → Service restarts
+//   the gateway → next ping succeeds.
+// Dead case: Both HTTP and exec fail → Sprite is gone → clean up.
+//
+// _heartbeatState tracks { fails, recoveries } per instance.
+// After MAX_RECOVERIES exec wakes without the gateway coming back, give up.
+const _heartbeatState = new Map();
+const MAX_HEARTBEAT_FAILURES = 3;
+const MAX_RECOVERIES = 3;
+
 export async function heartbeat() {
   const instances = await db.listAll();
-  const toWake = instances.filter((i) => i.status === "idle" || i.status === "claimed");
+  const toPing = instances.filter((i) => i.status === "idle" || i.status === "claimed");
 
-  for (const inst of toWake) {
-    sprite.exec(inst.sprite_name, "true").catch(() => {});
+  for (const inst of toPing) {
+    if (!inst.sprite_url) continue;
+    const state = _heartbeatState.get(inst.id) || { fails: 0, recoveries: 0 };
+    try {
+      const res = await fetch(`${inst.sprite_url}/convos/status`, {
+        signal: AbortSignal.timeout(10000),
+      });
+      if (res.ok) {
+        _heartbeatState.delete(inst.id);
+      } else {
+        throw new Error(`HTTP ${res.status}`);
+      }
+    } catch (err) {
+      state.fails++;
+      _heartbeatState.set(inst.id, state);
+      log.warn(`[heartbeat] ${inst.id} (${inst.status}) failed ping ${state.fails}/${MAX_HEARTBEAT_FAILURES}: ${err.message}`);
+
+      if (state.fails >= MAX_HEARTBEAT_FAILURES) {
+        if (state.recoveries >= MAX_RECOVERIES) {
+          log.error(`[heartbeat] ${inst.id} — ${MAX_RECOVERIES} recovery attempts failed — cleaning up`);
+          _heartbeatState.delete(inst.id);
+          await cleanupInstance(inst, "heartbeat failure after recovery attempts");
+          continue;
+        }
+        // Try to wake the Sprite via exec. If it works, the Service will
+        // restart the gateway and the next heartbeat should succeed.
+        try {
+          await sprite.exec(inst.sprite_name, "true");
+          state.recoveries++;
+          state.fails = 0;
+          log.info(`[heartbeat] ${inst.id} — woke via exec (${state.recoveries}/${MAX_RECOVERIES}), waiting for Service to restart gateway`);
+        } catch {
+          log.error(`[heartbeat] ${inst.id} — exec failed, Sprite is dead — cleaning up`);
+          _heartbeatState.delete(inst.id);
+          await cleanupInstance(inst, "heartbeat failure");
+        }
+      }
+    }
   }
 }
 

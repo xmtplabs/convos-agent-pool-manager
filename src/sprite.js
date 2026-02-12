@@ -150,26 +150,14 @@ async function consumeNdjsonStream(response) {
   return lastId;
 }
 
-// Start a long-running process inside a sprite (detached tmux session).
-// Returns immediately — the process runs in the background.
-// Set logLines > 0 to capture initial output for debugging.
-export async function startDetached(name, command, { logLines = 0 } = {}) {
-  log.debug(`[sprite] Starting detached on ${name}: ${command.slice(0, 80)}`);
-  const s = client().sprite(name);
-  const cmd = s.createSession("bash", ["-c", command]);
-  let logged = 0;
-  const logChunk = (stream, chunk) => {
-    if (logged >= logLines) return;
-    for (const line of chunk.toString().split("\n")) {
-      if (line.trim() && logged < logLines) {
-        log.debug(`[sprite]   ${name} ${stream}: ${line.trim()}`);
-        logged++;
-      }
-    }
-  };
-  cmd.stdout.on("data", logLines > 0 ? (d) => logChunk("out", d) : () => {});
-  cmd.stderr.on("data", logLines > 0 ? (d) => logChunk("err", d) : () => {});
-  cmd.on("error", (err) => {
-    log.warn(`[sprite] startDetached error on ${name}: ${err.message}`);
-  });
+// Register a persistent service on a Sprite via the sprite-env CLI.
+// Services auto-restart when a Sprite wakes from hibernation (unlike TTY sessions).
+// Uses the CLI because the REST API's PUT endpoint has a bug ("service name required").
+// Writes a wrapper script because the CLI's --args flag eats flags like "-c".
+export async function registerService(spriteName, serviceName, command) {
+  log.debug(`[sprite] Registering service "${serviceName}" on ${spriteName}`);
+  const scriptPath = `/tmp/service-${serviceName}.sh`;
+  await exec(spriteName, `cat > ${scriptPath} << 'SVCEOF'\n#!/usr/bin/env bash\n${command}\nSVCEOF\nchmod +x ${scriptPath}`);
+  await exec(spriteName, `/.sprite/bin/sprite-env services create ${serviceName} --cmd ${scriptPath}`);
+  log.debug(`[sprite]   Service "${serviceName}" registered`);
 }

@@ -2,6 +2,15 @@ import express from "express";
 import * as pool from "./pool.js";
 import * as db from "./db/pool.js";
 
+// Fail fast if required env vars are missing
+const REQUIRED_ENV = ["SPRITE_TOKEN", "DATABASE_URL", "POOL_API_KEY"];
+for (const key of REQUIRED_ENV) {
+  if (!process.env[key]) {
+    console.error(`FATAL: ${key} is not set. Are you using --env-file=.env?`);
+    process.exit(1);
+  }
+}
+
 const PORT = parseInt(process.env.PORT || "3001", 10);
 const POOL_API_KEY = process.env.POOL_API_KEY;
 const POOL_ENVIRONMENT = process.env.POOL_ENVIRONMENT || "dev";
