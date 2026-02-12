@@ -1,33 +1,30 @@
 #!/usr/bin/env node
-// Destroy all convos-agent sprites and clear the DB.
+// Destroy all sprites for the current environment and clear the DB.
+// Respects POOL_ENVIRONMENT — only touches sprites with the matching prefix.
 // Usage: npm run drain:all
 
-import { SpritesClient } from "@fly/sprites";
-import { neon } from "@neondatabase/serverless";
+import * as sprite from "../src/sprite.js";
+import { sql } from "../src/db/connection.js";
 
-const token = process.env.SPRITE_TOKEN;
-if (!token) { console.error("SPRITE_TOKEN not set"); process.exit(1); }
+const env = process.env.POOL_ENVIRONMENT || "dev";
+const prefix = `convos-agent-${env}-`;
 
-const db = process.env.DATABASE_URL ? neon(process.env.DATABASE_URL) : null;
-const client = new SpritesClient(token);
+console.log(`Draining all "${env}" sprites (prefix: ${prefix})`);
 
-const sprites = await client.listAllSprites("convos-agent-");
-console.log(`Found ${sprites.length} convos-agent sprite(s)`);
+const sprites = await sprite.listSprites(prefix);
+console.log(`Found ${sprites.length} sprite(s)`);
 
 for (const s of sprites) {
   try {
-    await client.deleteSprite(s.name);
+    await sprite.deleteSprite(s.name);
     console.log(`  Destroyed: ${s.name}`);
   } catch (err) {
     console.warn(`  Failed: ${s.name} — ${err.message}`);
   }
 }
 
-if (db) {
-  const result = await db`DELETE FROM pool_instances RETURNING id`;
-  console.log(`Cleared ${result.length} DB row(s)`);
-} else {
-  console.log("No DATABASE_URL — skipped DB cleanup");
-}
+const result = await sql`DELETE FROM pool_instances RETURNING id`;
+console.log(`Cleared ${result.length} DB row(s)`);
 
+await sql.end();
 console.log("Done");

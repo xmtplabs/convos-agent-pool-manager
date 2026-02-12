@@ -63,7 +63,7 @@ export async function getSpriteInfo(name) {
 
 // List all sprites whose names start with a given prefix.
 // Returns array of Sprite objects.
-export async function listSprites(prefix = "convos-agent-") {
+export async function listSprites(prefix = `convos-agent-${process.env.POOL_ENVIRONMENT || "dev"}-`) {
   return client().listAllSprites(prefix);
 }
 

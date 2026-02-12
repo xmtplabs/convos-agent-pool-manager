@@ -37,6 +37,7 @@ const BACKOFF_MS = 5 * 60 * 1000; // 5 minutes
 
 const POOL_ENVIRONMENT = process.env.POOL_ENVIRONMENT || "dev";
 const IS_PRODUCTION = POOL_ENVIRONMENT === "production";
+const SPRITE_PREFIX = `convos-agent-${POOL_ENVIRONMENT}-`;
 const XMTP_ENV = process.env.INSTANCE_XMTP_ENV || (IS_PRODUCTION ? "production" : "dev");
 const ANTHROPIC_API_KEY_VALUE = process.env.INSTANCE_ANTHROPIC_API_KEY || "";
 
@@ -87,7 +88,7 @@ function formatElapsed(ms) {
 // Create a single new Sprite and register it in the DB.
 export async function createInstance() {
   const id = nanoid(12);
-  const name = `convos-agent-${id}`;
+  const name = `${SPRITE_PREFIX}${id}`;
   const startTime = Date.now();
 
   log.info(`[pool] Creating ${id}`);
@@ -492,55 +493,16 @@ export async function destroyInstance(id) {
   replenish().catch((err) => log.error("[pool] Backfill error:", err));
 }
 
-// Heartbeat — ping all non-provisioning instances to keep Sprites awake.
-// Also serves as a health check: if an instance fails 3 consecutive pings, clean it up.
-const _failCounts = new Map();
-const MAX_HEARTBEAT_FAILURES = 3;
-
+// Heartbeat — wake all non-provisioning Sprites to prevent sleep.
+// Uses sprite.exec (hypervisor-level) rather than HTTP, so it works even
+// when the gateway process isn't responding. Health monitoring is handled
+// separately by reconcile() on a 5-min cycle.
 export async function heartbeat() {
   const instances = await db.listAll();
-  const toPing = instances.filter((i) => i.status === "idle" || i.status === "claimed");
+  const toWake = instances.filter((i) => i.status === "idle" || i.status === "claimed");
 
-  for (const inst of toPing) {
-    if (!inst.sprite_url) continue;
-    try {
-      const res = await fetch(`${inst.sprite_url}/convos/status`, {
-        signal: AbortSignal.timeout(10000),
-      });
-      if (res.ok) {
-        _failCounts.delete(inst.id);
-      } else {
-        throw new Error(`HTTP ${res.status}`);
-      }
-    } catch (err) {
-      const fails = (_failCounts.get(inst.id) || 0) + 1;
-      _failCounts.set(inst.id, fails);
-      log.warn(`[heartbeat] ${inst.id} (${inst.status}) failed ping ${fails}/${MAX_HEARTBEAT_FAILURES}: ${err.message}`);
-
-      if (fails >= MAX_HEARTBEAT_FAILURES) {
-        log.error(`[heartbeat] ${inst.id} unreachable — cleaning up`);
-        _failCounts.delete(inst.id);
-
-        // Check if the Sprite actually exists before deciding what to do
-        const info = await sprite.getSpriteInfo(inst.sprite_name);
-        if (!info) {
-          log.info(`[heartbeat] ${inst.id} — Sprite gone, removing from DB`);
-          await db.deleteInstance(inst.id);
-        } else if (inst.status === "idle") {
-          await cleanupInstance(inst, "heartbeat failure");
-        } else {
-          // Attempt to restart the gateway on the claimed Sprite
-          try {
-            await startGateway(inst.sprite_name);
-            log.info(`[heartbeat] ${inst.id} — gateway restarted`);
-            _failCounts.delete(inst.id);
-          } catch {
-            log.error(`[heartbeat] ${inst.id} — restart failed, cleaning up`);
-            await cleanupInstance(inst, "heartbeat failure + restart failed");
-          }
-        }
-      }
-    }
+  for (const inst of toWake) {
+    sprite.exec(inst.sprite_name, "true").catch(() => {});
   }
 }
 
