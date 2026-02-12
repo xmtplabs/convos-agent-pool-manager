@@ -3,31 +3,33 @@ set -euo pipefail
 
 mkdir -p ~/.openclaw/workspace
 
-cat > ~/.openclaw/openclaw.json << EOF
-{
-  "auth": {
-    "profiles": {
-      "anthropic:default": {
-        "provider": "anthropic",
-        "mode": "token"
+jq -n \
+  --arg xmtp_env "${XMTP_ENV:-dev}" \
+  --arg gateway_token "${GATEWAY_AUTH_TOKEN:-changeme}" \
+  --arg pool_api_key "${GATEWAY_AUTH_TOKEN:-}" \
+  '{
+    auth: {
+      profiles: {
+        "anthropic:default": {
+          provider: "anthropic",
+          mode: "token"
+        }
       }
+    },
+    channels: {
+      convos: {
+        enabled: true,
+        env: $xmtp_env,
+        poolApiKey: $pool_api_key
+      }
+    },
+    gateway: {
+      mode: "local",
+      port: 8080,
+      bind: "lan",
+      auth: { token: $gateway_token },
+      reload: { mode: "off" }
     }
-  },
-  "channels": {
-    "convos": {
-      "enabled": true,
-      "env": "${XMTP_ENV:-dev}",
-      "poolApiKey": "${GATEWAY_AUTH_TOKEN:-}"
-    }
-  },
-  "gateway": {
-    "mode": "local",
-    "port": 8080,
-    "bind": "lan",
-    "auth": { "token": "${GATEWAY_AUTH_TOKEN:-changeme}" },
-    "reload": { "mode": "off" }
-  }
-}
-EOF
+  }' > ~/.openclaw/openclaw.json
 
 exec openclaw gateway run --port 8080

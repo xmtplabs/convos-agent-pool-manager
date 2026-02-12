@@ -51,8 +51,12 @@ export async function createService(name, variables = {}) {
   // not supported in ServiceCreateInput).
   const rootDir = process.env.RAILWAY_SOURCE_ROOT_DIR;
   if (rootDir) {
-    await updateServiceInstance(serviceId, { rootDirectory: rootDir, autoDeploys: false });
-    console.log(`[railway]   Set rootDirectory: ${rootDir}, autoDeploys: false`);
+    try {
+      await updateServiceInstance(serviceId, { rootDirectory: rootDir, autoDeploys: false });
+      console.log(`[railway]   Set rootDirectory: ${rootDir}, autoDeploys: false`);
+    } catch (err) {
+      console.warn(`[railway] Failed to set rootDirectory for ${serviceId}:`, err);
+    }
   }
 
 
