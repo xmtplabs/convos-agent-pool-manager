@@ -293,7 +293,7 @@ export async function replenish() {
   const total = counts.provisioning + counts.idle + counts.claimed;
   const deficit = MIN_IDLE - (counts.idle + counts.provisioning);
 
-  const statusStr = `${counts.idle} ready, ${counts.provisioning} provisioning, ${counts.claimed} bound`;
+  const statusStr = `${counts.provisioning} starting, ${counts.idle} ready, ${counts.claimed} claimed`;
 
   if (deficit <= 0) {
     if (statusStr !== _lastStatusStr) {

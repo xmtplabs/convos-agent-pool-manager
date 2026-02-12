@@ -694,8 +694,8 @@ app.get("/", (_req, res) => {
     <div class="pool-bar">
       <div class="pool-bar-left">
         <span class="pool-bar-label">Pool</span>
-        <div class="pool-stat ready"><span class="dot"></span><span id="s-idle">-</span> ready</div>
         <div class="pool-stat starting"><span class="dot"></span><span id="s-prov">-</span> starting</div>
+        <div class="pool-stat ready"><span class="dot"></span><span id="s-idle">-</span> ready</div>
         <div class="pool-stat claimed"><span class="dot"></span><span id="s-alloc">-</span> claimed</div>
       </div>
       <div class="pool-bar-right">
@@ -1135,6 +1135,6 @@ app.listen(PORT, async () => {
   console.log(`Pool manager listening on :${PORT}`);
   try {
     const counts = await db.countByStatus();
-    console.log(`[pool] Status: ${counts.idle} ready, ${counts.provisioning} provisioning, ${counts.claimed} bound`);
+    console.log(`[pool] Status: ${counts.provisioning} starting, ${counts.idle} ready, ${counts.claimed} claimed`);
   } catch {}
 });
