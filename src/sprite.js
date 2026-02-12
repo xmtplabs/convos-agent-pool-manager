@@ -79,15 +79,83 @@ export async function exec(name, command) {
   };
 }
 
+// Create a checkpoint of the sprite's current state.
+// Consumes the NDJSON response stream and returns the checkpoint ID (e.g. "v0").
+export async function createCheckpoint(name, comment) {
+  console.log(`[sprite] Creating checkpoint on ${name}${comment ? `: ${comment}` : ""}`);
+  const s = client().sprite(name);
+  const res = await s.createCheckpoint(comment);
+  const id = await consumeNdjsonStream(res);
+  console.log(`[sprite]   Checkpoint created: ${id}`);
+  return id;
+}
+
+// Restore a sprite to a previously saved checkpoint.
+// Kills all running processes and resets filesystem state.
+export async function restoreCheckpoint(name, checkpointId) {
+  console.log(`[sprite] Restoring checkpoint ${checkpointId} on ${name}`);
+  const s = client().sprite(name);
+  const res = await s.restoreCheckpoint(checkpointId);
+  await consumeNdjsonStream(res);
+  console.log(`[sprite]   Checkpoint restored`);
+}
+
+// List all checkpoints for a sprite.
+export async function listCheckpoints(name) {
+  const s = client().sprite(name);
+  return s.listCheckpoints();
+}
+
+// Consume an NDJSON streaming response from the Sprites API.
+// Returns the checkpoint ID from the final message (if present).
+async function consumeNdjsonStream(response) {
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let lastId = null;
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop(); // keep incomplete line
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      try {
+        const msg = JSON.parse(line);
+        console.log(`[sprite]   ndjson: ${JSON.stringify(msg)}`);
+        if (msg.id) lastId = msg.id;
+        if (msg.status) {
+          console.log(`[sprite]   checkpoint: ${msg.status}`);
+        }
+      } catch {
+        // ignore non-JSON lines
+      }
+    }
+  }
+  return lastId;
+}
+
 // Start a long-running process inside a sprite (detached tmux session).
 // Returns immediately — the process runs in the background.
-export async function startDetached(name, command) {
+// Set logLines > 0 to capture initial output for debugging.
+export async function startDetached(name, command, { logLines = 0 } = {}) {
   console.log(`[sprite] Starting detached on ${name}: ${command.slice(0, 80)}`);
-  const sprite = client().sprite(name);
-  const cmd = sprite.createSession("bash", ["-c", command]);
-  // Drain streams and handle errors to prevent uncaught exceptions
-  cmd.stdout.on("data", () => {});
-  cmd.stderr.on("data", () => {});
+  const s = client().sprite(name);
+  const cmd = s.createSession("bash", ["-c", command]);
+  let logged = 0;
+  const logChunk = (stream, chunk) => {
+    if (logged >= logLines) return;
+    for (const line of chunk.toString().split("\n")) {
+      if (line.trim() && logged < logLines) {
+        console.log(`[sprite]   ${name} ${stream}: ${line.trim()}`);
+        logged++;
+      }
+    }
+  };
+  cmd.stdout.on("data", logLines > 0 ? (d) => logChunk("out", d) : () => {});
+  cmd.stderr.on("data", logLines > 0 ? (d) => logChunk("err", d) : () => {});
   cmd.on("error", (err) => {
     console.warn(`[sprite] startDetached error on ${name}: ${err.message}`);
   });

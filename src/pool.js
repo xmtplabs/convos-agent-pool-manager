@@ -4,7 +4,6 @@ const nanoid = customAlphabet("0123456789abcdefghijklmnopqrstuvwxyz", 12);
 import * as db from "./db/pool.js";
 import * as sprite from "./sprite.js";
 
-const POOL_API_KEY = process.env.POOL_API_KEY;
 const MIN_IDLE = parseInt(process.env.POOL_MIN_IDLE || "3", 10);
 const MAX_TOTAL = parseInt(process.env.POOL_MAX_TOTAL || "10", 10);
 
@@ -24,19 +23,45 @@ const STUCK_TIMEOUT_MS = parseInt(process.env.POOL_STUCK_TIMEOUT_MS || String(15
 const RECONCILE_INTERVAL_MS = parseInt(process.env.POOL_RECONCILE_INTERVAL_MS || String(5 * 60 * 1000), 10);
 let _lastReconcile = 0;
 
-function instanceEnvString() {
-  return [
-    `POOL_MODE=true`,
-    `POOL_API_KEY=${POOL_API_KEY}`,
-    `POOL_AUTH_CHOICE=${process.env.POOL_AUTH_CHOICE || "apiKey"}`,
-    `ANTHROPIC_API_KEY=${process.env.INSTANCE_ANTHROPIC_API_KEY || ""}`,
-    `XMTP_ENV=${process.env.INSTANCE_XMTP_ENV || "dev"}`,
-    `SETUP_PASSWORD=${process.env.INSTANCE_SETUP_PASSWORD || "pool-managed"}`,
-    `PORT=8080`,
-    // State dirs — must be writable by the "sprite" user (not /root)
-    `OPENCLAW_STATE_DIR=/opt/convos-agent/.openclaw`,
-    `OPENCLAW_WORKSPACE_DIR=/opt/convos-agent/.openclaw/workspace`,
-  ].join("\n");
+const XMTP_ENV = process.env.INSTANCE_XMTP_ENV || "dev";
+const ANTHROPIC_API_KEY_VALUE = process.env.INSTANCE_ANTHROPIC_API_KEY || "";
+
+// OpenClaw config written into each Sprite before the gateway starts.
+function openclawConfig() {
+  return JSON.stringify({
+    auth: {
+      profiles: {
+        "anthropic:default": {
+          provider: "anthropic",
+          mode: "token",
+        },
+      },
+    },
+    channels: {
+      convos: {
+        enabled: true,
+        env: XMTP_ENV,
+      },
+    },
+    plugins: {
+      entries: {
+        convos: { enabled: true },
+      },
+    },
+    gateway: {
+      mode: "local",
+      port: 8080,
+      bind: "lan",
+      auth: {
+        token: "pool-managed",
+      },
+    },
+  }, null, 2);
+}
+
+// Start the openclaw gateway on a Sprite. Used after setup and after checkpoint restore.
+async function startGateway(name) {
+  await sprite.startDetached(name, "source ~/.openclaw/.env && OPENCLAW_HIDE_BANNER=1 openclaw gateway run --port 8080", { logLines: 50 });
 }
 
 // Create a single new Sprite and register it in the DB.
@@ -54,27 +79,72 @@ export async function createInstance() {
   await db.insertInstance({ id, spriteName: name, spriteUrl: url });
   console.log(`[pool]   Registered as provisioning`);
 
-  // 3–5: Setup, env, and start — clean up sprite+DB on any failure
+  // 3–9: Setup, config, env, start, wait, checkpoint — clean up on failure
   try {
-    // 3. Run setup script inside the Sprite (takes several minutes)
+    // 3. Run setup in phases (separate exec calls to avoid WebSocket timeout)
+    const gitRef = process.env.OPENCLAW_GIT_REF || "main";
+
+    // Phase 1: Build tools + clone + pnpm install
     const setupScript = readFileSync(
       new URL("../scripts/sprite-setup.sh", import.meta.url), "utf-8"
     );
-    await sprite.exec(name, setupScript);
-    console.log(`[pool]   Setup script complete`);
+    await sprite.exec(name, `export OPENCLAW_GIT_REF=${gitRef}\n${setupScript}`);
+    console.log(`[pool]   Phase 1 done (tools + install)`);
 
-    // 4. Write .env file for the convos-agent wrapper
-    const envVars = instanceEnvString();
-    await retryExec(name, `cat > /opt/convos-agent/.env << 'ENVEOF'\n${envVars}\nENVEOF`);
+    // Phase 2: pnpm build
+    const pathPrefix = 'export PATH="$(npm config get prefix)/bin:$HOME/.bun/bin:$PATH"';
+    await retryExec(name, `${pathPrefix} && cd /openclaw && pnpm build 2>&1 | tail -20`);
+    console.log(`[pool]   Phase 2 done (build)`);
+
+    // Phase 3: CLI wrapper + workspace
+    await retryExec(name, `mkdir -p /usr/local/bin && cat > /usr/local/bin/openclaw << 'WRAPPER'\n#!/usr/bin/env bash\nexec node /openclaw/dist/entry.js "$@"\nWRAPPER\nchmod +x /usr/local/bin/openclaw && mkdir -p ~/.openclaw/workspace`);
+    console.log(`[pool]   Phase 3 done (CLI + workspace)`);
+
+    // 4. Write openclaw.json config (API provider, convos plugin, gateway auth)
+    const config = openclawConfig();
+    await retryExec(name, `cat > ~/.openclaw/openclaw.json << 'CFGEOF'\n${config}\nCFGEOF`);
+    console.log(`[pool]   OpenClaw config written`);
+
+    // 5. Write .env with ANTHROPIC_API_KEY (persists in checkpoint, sourced on gateway start)
+    await retryExec(name, `cat > ~/.openclaw/.env << 'ENVEOF'\nANTHROPIC_API_KEY=${ANTHROPIC_API_KEY_VALUE}\nENVEOF`);
     console.log(`[pool]   Environment written`);
 
-    // 5. Start the server (detached so it keeps running)
-    await sprite.startDetached(name, "cd /opt/convos-agent && node --env-file=.env src/server.js");
-    console.log(`[pool]   Server starting`);
+    // 6. Start the gateway
+    await startGateway(name);
+    console.log(`[pool]   Gateway starting`);
+
+    // 6b. Diagnostic: wait then dump gateway log + process/port state
+    await new Promise((r) => setTimeout(r, 10000));
+    try {
+      const diag = await sprite.exec(name, "echo '=== GATEWAY LOG (last 30 lines) ===' && tail -30 /tmp/gateway.log 2>/dev/null || echo 'no log'; echo '=== PORTS ===' && ss -tlnp 2>/dev/null || netstat -tlnp 2>/dev/null");
+      console.log(`[pool]   Gateway diag:\n${String(diag.stdout).trim()}`);
+    } catch (e) {
+      console.warn(`[pool]   Gateway diag failed: ${e.message}`);
+    }
+
+    // 7. Wait for gateway to become ready
+    await waitForGateway(url);
+    console.log(`[pool]   Gateway ready`);
+
+    // 8. Verify no XMTP state leaked (must be clean for golden checkpoint)
+    const convosCheck = await sprite.exec(name, "test -d ~/.convos && echo exists || echo clean");
+    if (String(convosCheck.stdout).trim() === "exists") {
+      throw new Error("~/.convos/ exists before checkpoint — XMTP state leaked");
+    }
+
+    // 9. Take golden checkpoint
+    const checkpointId = await sprite.createCheckpoint(name, "golden");
+    console.log(`[pool]   Golden checkpoint: ${checkpointId}`);
+
+    // 10. Mark idle with checkpoint
+    await db.markIdle(id, url, checkpointId);
+    console.log(`[pool]   Instance ${id} is ready`);
   } catch (err) {
     const r = err.result || {};
     if (r.exitCode !== undefined) {
-      console.error(`[pool]   Setup failed (exit ${r.exitCode}):\n  stdout: ${String(r.stdout || "").trim().split("\n").pop()}\n  stderr: ${String(r.stderr || "").trim()}`);
+      const stdoutLines = String(r.stdout || "").trim().split("\n");
+      const tail = stdoutLines.slice(-5).join("\n  ");
+      console.error(`[pool]   Setup failed (exit ${r.exitCode}):\n  stdout (last 5):\n  ${tail}\n  stderr: ${String(r.stderr || "").trim()}`);
     } else {
       console.error(`[pool]   Instance setup failed: ${err.message}`);
     }
@@ -87,7 +157,25 @@ export async function createInstance() {
   return { id, name, url };
 }
 
-// Check provisioning instances — if their /pool/status says ready, mark idle.
+// Poll the gateway until it responds with ready: true.
+async function waitForGateway(url, { timeoutMs = 120_000, intervalMs = 3000 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch(`${url}/convos/status`, { signal: AbortSignal.timeout(5000) });
+      if (res.ok) {
+        const body = await res.json();
+        if (body.ready) return;
+      }
+    } catch {
+      // gateway not up yet
+    }
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+  throw new Error(`Gateway at ${url} did not become ready within ${timeoutMs / 1000}s`);
+}
+
+// Check provisioning instances — if the gateway's /convos/status responds, mark idle.
 // If stuck beyond STUCK_TIMEOUT_MS, verify against Sprite API and clean up dead ones.
 export async function pollProvisioning() {
   const instances = await db.listProvisioning();
@@ -99,8 +187,7 @@ export async function pollProvisioning() {
     const age = Date.now() - new Date(inst.created_at).getTime();
     const ageStr = `${Math.round(age / 1000)}s`;
     try {
-      const res = await fetch(`${inst.sprite_url}/pool/status`, {
-        headers: { Authorization: `Bearer ${POOL_API_KEY}` },
+      const res = await fetch(`${inst.sprite_url}/convos/status`, {
         signal: AbortSignal.timeout(5000),
       });
       if (!res.ok) {
@@ -112,8 +199,8 @@ export async function pollProvisioning() {
         continue;
       }
       const status = await res.json();
-      console.log(`[poll] ${inst.id} (${ageStr}) — ready=${status.ready} provisioned=${status.provisioned}`);
-      if (status.ready && !status.provisioned) {
+      console.log(`[poll] ${inst.id} (${ageStr}) — ready=${status.ready} conversation=${!!status.conversation}`);
+      if (status.ready && !status.conversation) {
         await db.markIdle(inst.id, inst.sprite_url);
         console.log(`[poll] ${inst.id} is now idle`);
       }
@@ -205,36 +292,55 @@ export async function replenish() {
 
 // Launch an agent — provision an idle instance with instructions.
 // If joinUrl is provided, join an existing conversation instead of creating one.
-// Returns { inviteUrl, qrDataUrl, conversationId, joined } or null if no idle instances.
-export async function provision(agentId, instructions, joinUrl) {
+// Returns { inviteUrl, conversationId, joined } or null if no idle instances.
+export async function provision(agentName, instructions, joinUrl) {
   // 1. Atomically claim an idle instance
-  const instance = await db.claimOne(agentId);
+  const instance = await db.claimOne(agentName);
   if (!instance) return null;
 
-  console.log(`[pool] Launching ${instance.id} for agentId="${agentId}"${joinUrl ? " (join mode)" : ""}`);
+  console.log(`[pool] Launching ${instance.id} for agent="${agentName}"${joinUrl ? " (join mode)" : ""}`);
 
-  // 2. Call /pool/provision on the instance
-  const provisionBody = { instructions, name: agentId };
-  if (joinUrl) provisionBody.joinUrl = joinUrl;
+  // 2. Write INSTRUCTIONS.md to the workspace
+  await retryExec(instance.sprite_name, `cat > ~/.openclaw/workspace/INSTRUCTIONS.md << 'INSTREOF'\n${instructions}\nINSTREOF`);
+  console.log(`[pool]   INSTRUCTIONS.md written`);
 
-  console.log(`[pool] POST ${instance.sprite_url}/pool/provision name="${provisionBody.name}"${joinUrl ? ` joinUrl="${joinUrl.slice(0, 40)}..."` : ""}`);
-  const res = await fetch(`${instance.sprite_url}/pool/provision`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${POOL_API_KEY}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(provisionBody),
-  });
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Provision failed on ${instance.id}: ${res.status} ${text}`);
+  // 3. Create or join a conversation via the gateway
+  let result;
+  if (joinUrl) {
+    console.log(`[pool] POST ${instance.sprite_url}/convos/join profileName="${agentName}" joinUrl="${joinUrl.slice(0, 40)}..."`);
+    const res = await fetch(`${instance.sprite_url}/convos/join`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ inviteUrl: joinUrl, profileName: agentName, env: XMTP_ENV }),
+    });
+    if (res.status === 409) {
+      throw new Error(`Instance ${instance.id} already bound to a conversation`);
+    }
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`Join failed on ${instance.id}: ${res.status} ${text}`);
+    }
+    result = await res.json();
+    // status is "joined" or "waiting_for_acceptance"
+    result.joined = result.status === "joined";
+  } else {
+    console.log(`[pool] POST ${instance.sprite_url}/convos/conversation name="${agentName}"`);
+    const res = await fetch(`${instance.sprite_url}/convos/conversation`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: agentName, profileName: agentName, env: XMTP_ENV }),
+    });
+    if (res.status === 409) {
+      throw new Error(`Instance ${instance.id} already bound to a conversation`);
+    }
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`Conversation create failed on ${instance.id}: ${res.status} ${text}`);
+    }
+    result = await res.json();
   }
 
-  const result = await res.json();
-
-  // 3. Store the invite URL, conversation ID, and instructions
+  // 4. Store the invite URL, conversation ID, and instructions
   await db.setClaimed(instance.id, {
     inviteUrl: result.inviteUrl || joinUrl || null,
     conversationId: result.conversationId,
@@ -242,10 +348,10 @@ export async function provision(agentId, instructions, joinUrl) {
     joinUrl: joinUrl || null,
   });
 
-  console.log(`[pool] Provisioned ${instance.id}: ${result.joined ? "joined" : "created"} conversation ${result.conversationId}`);
+  console.log(`[pool] Provisioned ${instance.id}: ${result.joined ? "joined" : result.status === "waiting_for_acceptance" ? "waiting for acceptance" : "created"} conversation ${result.conversationId || "(pending)"}`);
 
-  // 4. Always start a 1-for-1 replacement (capped by MAX_TOTAL).
-  //    More robust under heavy demand than waiting for deficit-based replenish.
+
+  // 5. Always start a 1-for-1 replacement (capped by MAX_TOTAL).
   const counts = await db.countByStatus();
   const total = counts.provisioning + counts.idle + counts.claimed;
   if (total < MAX_TOTAL) {
@@ -255,14 +361,15 @@ export async function provision(agentId, instructions, joinUrl) {
 
   return {
     inviteUrl: result.inviteUrl || null,
-    qrDataUrl: result.qrDataUrl || null,
-    conversationId: result.conversationId,
+    inviteSlug: result.inviteSlug || null,
+    conversationId: result.conversationId || null,
     instanceId: instance.id,
     joined: !!result.joined,
+    waitingForAcceptance: result.status === "waiting_for_acceptance",
   };
 }
 
-// Drain idle instances from the pool — delete Sprites and remove from DB.
+// Drain idle instances from the pool — permanently destroy Sprites.
 export async function drainPool(count) {
   const idle = await db.listIdle(count);
   console.log(`[pool] Draining ${idle.length} idle instance(s)...`);
@@ -280,13 +387,49 @@ export async function drainPool(count) {
   return results;
 }
 
-// Kill a launched instance — delete Sprite and remove from DB.
-export async function killInstance(id) {
+// Recycle a claimed instance — restore checkpoint, restart gateway, return to idle.
+// Falls back to destroyInstance if there's no checkpoint or restore fails.
+export async function recycleInstance(id) {
   const instances = await db.listAll();
   const inst = instances.find((i) => i.id === id);
   if (!inst) throw new Error(`Instance ${id} not found`);
 
-  console.log(`[pool] Killing instance ${inst.id} (${inst.claimed_by})`);
+  console.log(`[pool] Recycling instance ${inst.id} (${inst.claimed_by})`);
+
+  if (!inst.checkpoint_id) {
+    console.warn(`[pool]   No checkpoint — falling back to destroy`);
+    return destroyInstance(id);
+  }
+
+  try {
+    // 1. Restore filesystem to golden checkpoint (kills all processes)
+    await sprite.restoreCheckpoint(inst.sprite_name, inst.checkpoint_id);
+    console.log(`[pool]   Checkpoint restored`);
+
+    // 2. Restart the gateway
+    await startGateway(inst.sprite_name);
+    console.log(`[pool]   Gateway restarting`);
+
+    // 3. Wait for gateway to come up
+    await waitForGateway(inst.sprite_url, { timeoutMs: 60_000 });
+    console.log(`[pool]   Gateway ready`);
+
+    // 4. Mark idle (clears claimed_by, conversation_id, etc.)
+    await db.markIdle(inst.id, inst.sprite_url);
+    console.log(`[pool]   Instance ${inst.id} recycled → idle`);
+  } catch (err) {
+    console.error(`[pool]   Recycle failed: ${err.message} — destroying`);
+    await destroyInstance(id);
+  }
+}
+
+// Permanently destroy an instance — delete Sprite and remove from DB.
+export async function destroyInstance(id) {
+  const instances = await db.listAll();
+  const inst = instances.find((i) => i.id === id);
+  if (!inst) throw new Error(`Instance ${id} not found`);
+
+  console.log(`[pool] Destroying instance ${inst.id} (${inst.claimed_by})`);
 
   try {
     await sprite.deleteSprite(inst.sprite_name);
@@ -314,8 +457,7 @@ export async function heartbeat() {
   for (const inst of toPing) {
     if (!inst.sprite_url) continue;
     try {
-      const res = await fetch(`${inst.sprite_url}/pool/status`, {
-        headers: { Authorization: `Bearer ${POOL_API_KEY}` },
+      const res = await fetch(`${inst.sprite_url}/convos/status`, {
         signal: AbortSignal.timeout(10000),
       });
       if (res.ok) {
@@ -335,16 +477,15 @@ export async function heartbeat() {
         // Check if the Sprite actually exists before deciding what to do
         const info = await sprite.getSpriteInfo(inst.sprite_name);
         if (!info) {
-          // Sprite is gone (or sprite_name is a stale Railway UUID) — just remove from DB
           console.log(`[heartbeat] ${inst.id} — Sprite gone, removing from DB`);
           await db.deleteInstance(inst.id);
         } else if (inst.status === "idle") {
           await cleanupInstance(inst, "heartbeat failure");
         } else {
-          // Attempt to restart the server on the claimed Sprite
+          // Attempt to restart the gateway on the claimed Sprite
           try {
-            await sprite.startDetached(inst.sprite_name, "cd /opt/convos-agent && node --env-file=.env src/server.js");
-            console.log(`[heartbeat] ${inst.id} — server restarted`);
+            await startGateway(inst.sprite_name);
+            console.log(`[heartbeat] ${inst.id} — gateway restarted`);
             _failCounts.delete(inst.id);
           } catch {
             console.error(`[heartbeat] ${inst.id} — restart failed, cleaning up`);

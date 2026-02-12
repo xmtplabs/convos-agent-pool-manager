@@ -60,6 +60,19 @@ async function migrate() {
     END $$
   `;
 
+  // Add checkpoint_id column if missing
+  await sql`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'pool_instances' AND column_name = 'checkpoint_id'
+      ) THEN
+        ALTER TABLE pool_instances ADD COLUMN checkpoint_id TEXT;
+      END IF;
+    END $$
+  `;
+
   // Rename Railway columns to Sprite columns
   await sql`
     DO $$

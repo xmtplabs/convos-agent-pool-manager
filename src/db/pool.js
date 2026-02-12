@@ -7,20 +7,29 @@ export async function insertInstance({ id, spriteName, spriteUrl }) {
   `;
 }
 
-export async function markIdle(id, spriteUrl) {
+export async function markIdle(id, spriteUrl, checkpointId) {
   await sql`
     UPDATE pool_instances
-    SET status = 'idle', sprite_url = ${spriteUrl}, updated_at = NOW()
+    SET status = 'idle',
+        sprite_url = ${spriteUrl},
+        checkpoint_id = COALESCE(${checkpointId || null}, checkpoint_id),
+        claimed_by = NULL,
+        invite_url = NULL,
+        conversation_id = NULL,
+        instructions = NULL,
+        join_url = NULL,
+        claimed_at = NULL,
+        updated_at = NOW()
     WHERE id = ${id}
   `;
 }
 
-export async function claimOne(agentId) {
+export async function claimOne(agentName) {
   // Atomically grab one idle instance
   const result = await sql`
     UPDATE pool_instances
     SET status = 'claimed',
-        claimed_by = ${agentId},
+        claimed_by = ${agentName},
         claimed_at = NOW(),
         updated_at = NOW()
     WHERE id = (

@@ -25,7 +25,7 @@ function requireAuth(req, res, next) {
 app.get("/healthz", (_req, res) => res.json({ ok: true }));
 
 // Version — check this to verify what code is deployed.
-const BUILD_VERSION = "2026-02-08T23:pool-v2";
+const BUILD_VERSION = "2026-02-11:openclaw-gateway-direct";
 app.get("/version", (_req, res) => res.json({ version: BUILD_VERSION, environment: POOL_ENVIRONMENT }));
 
 // Pool counts (no auth — used by the launch form)
@@ -58,13 +58,24 @@ app.delete("/api/pool/instances", requireAuth, async (_req, res) => {
   }
 });
 
-// Kill a launched instance
+// Recycle a launched instance (restore checkpoint → return to idle)
 app.delete("/api/pool/instances/:id", requireAuth, async (req, res) => {
   try {
-    await pool.killInstance(req.params.id);
+    await pool.recycleInstance(req.params.id);
     res.json({ ok: true });
   } catch (err) {
-    console.error("[api] Kill failed:", err);
+    console.error("[api] Recycle failed:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Permanently destroy an instance (delete Sprite + DB)
+app.delete("/api/pool/instances/:id/destroy", requireAuth, async (req, res) => {
+  try {
+    await pool.destroyInstance(req.params.id);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("[api] Destroy failed:", err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -83,12 +94,12 @@ app.get("/api/pool/debug/:id", requireAuth, async (req, res) => {
   } catch (err) { results.processes = `error: ${err.message}`; }
 
   try {
-    const check = await sprite.exec(inst.sprite_name, `node -e "fetch('http://localhost:8080/pool/status').then(async r=>{const b=await r.text();console.log(JSON.stringify({status:r.status,body:b.slice(0,200)}))}).catch(e=>console.log(JSON.stringify({error:e.message})))"`);
+    const check = await sprite.exec(inst.sprite_name, `node -e "fetch('http://localhost:8080/convos/status').then(async r=>{const b=await r.text();console.log(JSON.stringify({status:r.status,body:b.slice(0,200)}))}).catch(e=>console.log(JSON.stringify({error:e.message})))"`);
     results.localCheck = check.stdout?.trim();
   } catch (err) { results.localCheck = `error: ${err.message}`; }
 
   try {
-    const env = await sprite.exec(inst.sprite_name, "cat /opt/convos-agent/.env 2>/dev/null || echo 'no .env'");
+    const env = await sprite.exec(inst.sprite_name, "cat ~/.openclaw/.env 2>/dev/null || echo 'no .env'");
     results.envExists = !env.stdout?.includes("no .env");
   } catch (err) { results.envExists = `error: ${err.message}`; }
 
@@ -818,7 +829,8 @@ app.get("/", (_req, res) => {
           '<div class="agent-instructions">'+instr+'</div>'+
           '<div class="agent-actions">'+
             '<button class="btn-secondary" data-qr="'+a.id+'">Show QR</button>'+
-            '<button class="btn-danger" data-kill="'+a.id+'">Kill</button>'+
+            '<button class="btn-secondary" data-recycle="'+a.id+'">Recycle</button>'+
+            '<button class="btn-danger" data-destroy="'+a.id+'">Destroy</button>'+
           '</div>'+
         '</div>';
       }).join('');
@@ -832,10 +844,16 @@ app.get("/", (_req, res) => {
         if(a)showQr(a.claimed_by||a.id,a.invite_url||'');
         return;
       }
-      var killId=e.target.getAttribute('data-kill');
-      if(killId){
-        var a2=agentsCache.find(function(x){return x.id===killId;});
-        if(a2)killAgent(a2.id,a2.claimed_by||a2.id);
+      var recycleId=e.target.getAttribute('data-recycle');
+      if(recycleId){
+        var a2=agentsCache.find(function(x){return x.id===recycleId;});
+        if(a2)recycleAgent(a2.id,a2.claimed_by||a2.id);
+        return;
+      }
+      var destroyId=e.target.getAttribute('data-destroy');
+      if(destroyId){
+        var a3=agentsCache.find(function(x){return x.id===destroyId;});
+        if(a3)destroyAgent(a3.id,a3.claimed_by||a3.id);
       }
     };
 
@@ -851,35 +869,47 @@ app.get("/", (_req, res) => {
     function closeModal(){modal.classList.remove('active');}
     modal.onclick=function(e){if(e.target===modal)closeModal();};
 
-    // Kill single agent
-    function markDestroying(id){
+    // Agent lifecycle actions
+    function markBusy(id,label){
       var card=document.getElementById('agent-'+id);
       if(card){
         card.classList.add('destroying');
         var uptime=card.querySelector('.agent-uptime');
-        if(uptime)uptime.textContent='Destroying...';
+        if(uptime)uptime.textContent=label;
       }
     }
 
-    async function killOne(id){
-      markDestroying(id);
-      var res=await fetch('/api/pool/instances/'+id,{method:'DELETE',headers:authHeaders});
-      var data=await res.json();
-      if(!res.ok)throw new Error(data.error||'Kill failed');
-      var card=document.getElementById('agent-'+id);
-      if(card)card.remove();
-      return id;
+    async function recycleAgent(id,name){
+      if(!confirm((POOL_ENV==='production'?'[PRODUCTION] ':'')+
+        'Recycle "'+name+'"? This will restore it to a clean state and return it to the pool.'))return;
+      markBusy(id,'Recycling...');
+      try{
+        var res=await fetch('/api/pool/instances/'+id,{method:'DELETE',headers:authHeaders});
+        var data=await res.json();
+        if(!res.ok)throw new Error(data.error||'Recycle failed');
+        var card=document.getElementById('agent-'+id);
+        if(card)card.remove();
+        refreshStatus();refreshFeed();
+      }catch(err){
+        alert('Failed to recycle: '+err.message);
+        var card=document.getElementById('agent-'+id);
+        if(card)card.classList.remove('destroying');
+      }
     }
 
-    async function killAgent(id,name){
-      var confirmMsg=(POOL_ENV==='production'?'[PRODUCTION] ':'')+
-        'Are you sure you want to kill "'+name+'"? This will delete the Sprite permanently.';
-      if(!confirm(confirmMsg))return;
+    async function destroyAgent(id,name){
+      if(!confirm((POOL_ENV==='production'?'[PRODUCTION] ':'')+
+        'Permanently destroy "'+name+'"? This will delete the Sprite entirely.'))return;
+      markBusy(id,'Destroying...');
       try{
-        await killOne(id);
+        var res=await fetch('/api/pool/instances/'+id+'/destroy',{method:'DELETE',headers:authHeaders});
+        var data=await res.json();
+        if(!res.ok)throw new Error(data.error||'Destroy failed');
+        var card=document.getElementById('agent-'+id);
+        if(card)card.remove();
         refreshStatus();
       }catch(err){
-        alert('Failed to kill: '+err.message);
+        alert('Failed to destroy: '+err.message);
         var card=document.getElementById('agent-'+id);
         if(card)card.classList.remove('destroying');
       }
@@ -913,7 +943,7 @@ app.get("/", (_req, res) => {
     f.onsubmit=async function(e){
       e.preventDefault();
       var agentName=f.name.value.trim();
-      var payload={agentId:agentName,instructions:f.instructions.value.trim()};
+      var payload={agentName:agentName,instructions:f.instructions.value.trim()};
       if(isJoinMode){
         var jUrl=joinUrlInput.value.trim();
         if(!jUrl){errorEl.textContent='Conversation link is required';errorEl.style.display='block';return;}
@@ -1002,19 +1032,19 @@ app.get("/api/pool/status", requireAuth, async (_req, res) => {
 
 // Launch an agent — claim an idle instance and provision it with instructions.
 app.post("/api/pool/claim", requireAuth, async (req, res) => {
-  const { agentId, instructions, joinUrl } = req.body || {};
+  const { agentName, instructions, joinUrl } = req.body || {};
   if (!instructions || typeof instructions !== "string") {
     return res.status(400).json({ error: "instructions (string) is required" });
   }
-  if (!agentId || typeof agentId !== "string") {
-    return res.status(400).json({ error: "agentId (string) is required" });
+  if (!agentName || typeof agentName !== "string") {
+    return res.status(400).json({ error: "agentName (string) is required" });
   }
   if (joinUrl && typeof joinUrl !== "string") {
     return res.status(400).json({ error: "joinUrl must be a string if provided" });
   }
 
   try {
-    const result = await pool.provision(agentId, instructions, joinUrl || undefined);
+    const result = await pool.provision(agentName, instructions, joinUrl || undefined);
     if (!result) {
       return res.status(503).json({
         error: "No idle instances available. Try again in a few minutes.",
@@ -1023,21 +1053,6 @@ app.post("/api/pool/claim", requireAuth, async (req, res) => {
     res.json(result);
   } catch (err) {
     console.error("[api] Launch failed:", err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Redirect to the setup page of an idle instance
-app.get("/api/pool/setup", requireAuth, async (_req, res) => {
-  try {
-    const instance = await db.findIdle();
-    if (!instance) {
-      return res.status(503).json({
-        error: "No idle instances available. Try again in a few minutes.",
-      });
-    }
-    res.redirect(`${instance.sprite_url}/setup`);
-  } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });

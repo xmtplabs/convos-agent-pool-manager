@@ -17,9 +17,9 @@ echo "[2/6] Bun ready"
 # --- Install pnpm and ensure it's in PATH ---
 npm install -g pnpm > /dev/null 2>&1
 export PATH="$(npm config get prefix)/bin:$PATH"
-echo "[2.5/6] pnpm ready: $(pnpm --version)"
+echo "[3/6] pnpm ready: $(pnpm --version)"
 
-# --- Clone and build OpenClaw ---
+# --- Clone OpenClaw and install dependencies ---
 # Install to /openclaw so paths match the convos-agent server defaults:
 #   OPENCLAW_ENTRY=/openclaw/dist/entry.js
 #   plugins.load.paths=["/openclaw/extensions"]
@@ -33,32 +33,11 @@ find ./extensions -name 'package.json' -type f | while read f; do
   sed -i -E 's/"openclaw"[[:space:]]*:[[:space:]]*">=[^"]+"/"openclaw": "*"/g' "$f"
   sed -i -E 's/"openclaw"[[:space:]]*:[[:space:]]*"workspace:[^"]+"/"openclaw": "*"/g' "$f"
 done
+echo "[4/6] Patches applied, running pnpm install..."
 
-pnpm install --no-frozen-lockfile > /dev/null 2>&1
-pnpm build > /dev/null 2>&1
-pnpm ui:install > /dev/null 2>&1 && pnpm ui:build > /dev/null 2>&1
-echo "[3/6] OpenClaw built"
+pnpm install --no-frozen-lockfile 2>&1 | tail -20
+echo "[5/6] pnpm install done"
 
-# --- Create openclaw CLI wrapper ---
-mkdir -p /usr/local/bin
-cat > /usr/local/bin/openclaw << 'WRAPPER'
-#!/usr/bin/env bash
-exec node /openclaw/dist/entry.js "$@"
-WRAPPER
-chmod +x /usr/local/bin/openclaw
-echo "[4/6] OpenClaw CLI ready"
-
-# --- Clone convos-agent wrapper ---
-rm -rf /opt/convos-agent
-git clone --depth 1 https://github.com/xmtplabs/convos-agent-railway-template /opt/convos-agent
-cd /opt/convos-agent
-npm install --omit=dev > /dev/null 2>&1
-echo "[5/6] Convos-agent wrapper installed"
-
-# --- Create persistent directories ---
-# Setup runs as root, but the server runs as user "sprite" via createSession.
-# Make state + app dirs writable by the sprite user.
-mkdir -p /opt/convos-agent/.openclaw/workspace
-chmod -R 777 /opt/convos-agent
-
-echo "[6/6] Setup complete"
+# Build, UI, and CLI wrapper are run as separate exec calls by the pool manager
+# to avoid WebSocket timeout on long-running commands.
+echo "[6/6] Phase 1 complete — ready for build phase"
