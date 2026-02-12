@@ -221,7 +221,11 @@ export async function provision(agentName, instructions, joinUrl) {
     }
   } catch (err) {
     console.error(`[pool] Provision failed for ${instance.id} (agent=${agentName}), releasing claim:`, err.message);
-    await db.markIdle(instance.id, instance.railway_url);
+    try {
+      await db.markIdle(instance.id, instance.railway_url);
+    } catch (releaseErr) {
+      console.error(`[pool] Failed to release claim for ${instance.id}:`, releaseErr.message);
+    }
     throw err;
   }
 
