@@ -45,14 +45,14 @@ export async function createInstance() {
   return { id, serviceId, url, name };
 }
 
-// Check provisioning instances — if their /pool/status says ready, mark idle.
+// Check provisioning instances — if their /convos/status says ready, mark idle.
 // If stuck beyond STUCK_TIMEOUT_MS, verify against Railway and clean up dead ones.
 export async function pollProvisioning() {
   const instances = await db.listProvisioning();
   for (const inst of instances) {
     if (!inst.railway_url) continue;
     try {
-      const res = await fetch(`${inst.railway_url}/pool/status`, {
+      const res = await fetch(`${inst.railway_url}/convos/status`, {
         headers: { Authorization: `Bearer ${POOL_API_KEY}` },
         signal: AbortSignal.timeout(5000),
       });
@@ -67,7 +67,7 @@ export async function pollProvisioning() {
         continue;
       }
       const status = await res.json();
-      if (status.ready && !status.provisioned) {
+      if (status.ready && !status.conversation) {
         await db.markIdle(inst.id, inst.railway_url);
         console.log(`[pool] ${inst.id} is now idle`);
       }
