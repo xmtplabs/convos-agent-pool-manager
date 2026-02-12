@@ -100,11 +100,13 @@ async function cleanupInstance(inst, reason) {
 }
 
 // Reconcile DB state with Railway — remove orphaned entries where the service
-// no longer exists OR where the instance is idle but not actually reachable.
+// no longer exists OR where the instance is not actually reachable.
+// Checks ALL statuses (idle + claimed) — a dead claimed instance means a user's
+// agent is silently gone, which is worse than a dead idle one.
+// Provisioning instances are skipped since pollProvisioning() handles those.
 export async function reconcile() {
   const instances = await db.listAll();
-  // Only check non-claimed instances (provisioning + idle) to avoid disrupting active agents
-  const toCheck = instances.filter((i) => i.status !== "claimed");
+  const toCheck = instances.filter((i) => i.status !== "provisioning");
   let cleaned = 0;
 
   for (const inst of toCheck) {
@@ -116,22 +118,22 @@ export async function reconcile() {
       continue;
     }
 
-    // For idle instances, verify they're actually reachable. A service can exist
-    // on Railway but be undeployed/crashed — these ghost entries block the pool.
-    if (inst.status === "idle" && inst.railway_url) {
+    // Verify the instance is actually reachable. A service can exist on Railway
+    // but be undeployed/crashed — these ghost entries block the pool.
+    if (inst.railway_url) {
       try {
         const res = await fetch(`${inst.railway_url}/convos/status`, {
           headers: { Authorization: `Bearer ${POOL_API_KEY}` },
           signal: AbortSignal.timeout(5000),
         });
         if (!res.ok) {
-          console.log(`[reconcile] ${inst.id} idle but unreachable (HTTP ${res.status}) — cleaning up`);
-          await cleanupInstance(inst, "idle but unreachable");
+          console.log(`[reconcile] ${inst.id} (${inst.status}) unreachable (HTTP ${res.status}) — cleaning up`);
+          await cleanupInstance(inst, `${inst.status} but unreachable`);
           cleaned++;
         }
       } catch {
-        console.log(`[reconcile] ${inst.id} idle but unreachable (timeout/error) — cleaning up`);
-        await cleanupInstance(inst, "idle but unreachable");
+        console.log(`[reconcile] ${inst.id} (${inst.status}) unreachable (timeout/error) — cleaning up`);
+        await cleanupInstance(inst, `${inst.status} but unreachable`);
         cleaned++;
       }
     }
