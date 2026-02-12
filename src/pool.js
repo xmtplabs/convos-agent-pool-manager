@@ -134,16 +134,24 @@ export async function reconcile() {
             const threshold = 3;
             if (failures >= threshold) {
               console.log(`[reconcile] ${inst.id} (${inst.status}) unreachable (HTTP ${res.status}) — ${failures} consecutive failures, cleaning up`);
-              await cleanupInstance(inst, `${inst.status} but unreachable after ${failures} failures`);
-              cleaned++;
+              try {
+                await cleanupInstance(inst, `${inst.status} but unreachable after ${failures} failures`);
+                cleaned++;
+              } catch (err) {
+                console.warn(`[reconcile] ${inst.id} cleanup failed: ${err.message}`);
+              }
             } else {
               console.log(`[reconcile] ${inst.id} (${inst.status}) unreachable (HTTP ${res.status}) — failure ${failures}/${threshold}, will retry`);
             }
           } else {
             // Idle instances can be cleaned up immediately
             console.log(`[reconcile] ${inst.id} (${inst.status}) unreachable (HTTP ${res.status}) — cleaning up`);
-            await cleanupInstance(inst, `${inst.status} but unreachable`);
-            cleaned++;
+            try {
+              await cleanupInstance(inst, `${inst.status} but unreachable`);
+              cleaned++;
+            } catch (err) {
+              console.warn(`[reconcile] ${inst.id} cleanup failed: ${err.message}`);
+            }
           }
         } else {
           // Successful health check — reset failure count if any
@@ -159,16 +167,24 @@ export async function reconcile() {
           const threshold = 3;
           if (failures >= threshold) {
             console.log(`[reconcile] ${inst.id} (${inst.status}) unreachable (timeout/error) — ${failures} consecutive failures, cleaning up`);
-            await cleanupInstance(inst, `${inst.status} but unreachable after ${failures} failures`);
-            cleaned++;
+            try {
+              await cleanupInstance(inst, `${inst.status} but unreachable after ${failures} failures`);
+              cleaned++;
+            } catch (err) {
+              console.warn(`[reconcile] ${inst.id} cleanup failed: ${err.message}`);
+            }
           } else {
             console.log(`[reconcile] ${inst.id} (${inst.status}) unreachable (timeout/error) — failure ${failures}/${threshold}, will retry`);
           }
         } else {
           // Idle instances can be cleaned up immediately
           console.log(`[reconcile] ${inst.id} (${inst.status}) unreachable (timeout/error) — cleaning up`);
-          await cleanupInstance(inst, `${inst.status} but unreachable`);
-          cleaned++;
+          try {
+            await cleanupInstance(inst, `${inst.status} but unreachable`);
+            cleaned++;
+          } catch (err) {
+            console.warn(`[reconcile] ${inst.id} cleanup failed: ${err.message}`);
+          }
         }
       }
     } else {
