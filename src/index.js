@@ -875,6 +875,12 @@ app.get("/", (_req, res) => {
       if(isJoinMode){
         var jUrl=joinUrlInput.value.trim();
         if(!jUrl){errorEl.textContent='Conversation link is required';errorEl.style.display='block';return;}
+        if(POOL_ENV==='production'&&/dev\\.convos\\.org/i.test(jUrl)){
+          errorEl.textContent='That looks like a dev environment link. Use a popup.convos.org link for production.';errorEl.style.display='block';return;
+        }
+        if(POOL_ENV!=='production'&&/popup\\.convos\\.org/i.test(jUrl)){
+          errorEl.textContent='That looks like a production link. Use a dev.convos.org link for the dev environment.';errorEl.style.display='block';return;
+        }
         payload.joinUrl=jUrl;
       }
       launching=true;btn.disabled=true;btn.textContent=isJoinMode?'Joining...':'Launching...';
@@ -969,6 +975,12 @@ app.post("/api/pool/claim", requireAuth, async (req, res) => {
   }
   if (joinUrl && typeof joinUrl !== "string") {
     return res.status(400).json({ error: "joinUrl must be a string if provided" });
+  }
+  if (joinUrl && POOL_ENVIRONMENT === "production" && /dev\.convos\.org/i.test(joinUrl)) {
+    return res.status(400).json({ error: "dev.convos.org links cannot be used in the production environment" });
+  }
+  if (joinUrl && POOL_ENVIRONMENT !== "production" && /popup\.convos\.org/i.test(joinUrl)) {
+    return res.status(400).json({ error: `popup.convos.org links cannot be used in the ${POOL_ENVIRONMENT} environment` });
   }
 
   try {
