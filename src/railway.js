@@ -115,6 +115,18 @@ export async function createService(name, variables = {}) {
     } catch (err) {
       console.warn(`[railway] Failed to deploy correct branch for ${serviceId}:`, err);
     }
+
+    // Disconnect the repo so pushes don't auto-redeploy all agent instances.
+    // The correct commit is already deployed above; no further repo link needed.
+    try {
+      await gql(
+        `mutation($id: String!) { serviceDisconnect(id: $id) { id } }`,
+        { id: serviceId }
+      );
+      console.log(`[railway]   Disconnected repo (auto-deploys disabled)`);
+    } catch (err) {
+      console.warn(`[railway] Failed to disconnect repo for ${serviceId}:`, err);
+    }
   }
 
   return serviceId;
