@@ -158,12 +158,12 @@ export async function replenish() {
 // Launch an agent — claim an idle instance and provision it directly via OpenClaw.
 // If joinUrl is provided, join an existing conversation instead of creating one.
 // Returns { inviteUrl, conversationId, instanceId, joined } or null if no idle instances.
-export async function provision(agentId, instructions, joinUrl) {
+export async function provision(agentName, instructions, joinUrl) {
   // 1. Atomically claim an idle instance
-  const instance = await db.claimOne(agentId);
+  const instance = await db.claimOne(agentName);
   if (!instance) return null;
 
-  console.log(`[pool] Launching ${instance.id} for agentId="${agentId}"${joinUrl ? " (join mode)" : ""}`);
+  console.log(`[pool] Launching ${instance.id} for agentName="${agentName}"${joinUrl ? " (join mode)" : ""}`);
 
   const headers = {
     "Content-Type": "application/json",
@@ -182,14 +182,14 @@ export async function provision(agentId, instructions, joinUrl) {
         signal: AbortSignal.timeout(30_000),
         body: JSON.stringify({
           inviteUrl: joinUrl,
-          profileName: agentId,
+          profileName: agentName,
           env: process.env.INSTANCE_XMTP_ENV || "dev",
           instructions,
         }),
       });
       if (!res.ok) {
         const text = await res.text();
-        throw new Error(`Join failed on ${instance.id} (agent=${agentId}): ${res.status} ${text}`);
+        throw new Error(`Join failed on ${instance.id} (agent=${agentName}): ${res.status} ${text}`);
       }
       result = await res.json();
       result.joined = true;
@@ -200,20 +200,21 @@ export async function provision(agentId, instructions, joinUrl) {
         headers,
         signal: AbortSignal.timeout(30_000),
         body: JSON.stringify({
-          name: agentId,
+          name: agentName,
+          profileName: agentName,
           env: process.env.INSTANCE_XMTP_ENV || "dev",
           instructions,
         }),
       });
       if (!res.ok) {
         const text = await res.text();
-        throw new Error(`Create failed on ${instance.id} (agent=${agentId}): ${res.status} ${text}`);
+        throw new Error(`Create failed on ${instance.id} (agent=${agentName}): ${res.status} ${text}`);
       }
       result = await res.json();
       result.joined = false;
     }
   } catch (err) {
-    console.error(`[pool] Provision failed for ${instance.id} (agent=${agentId}), releasing claim:`, err.message);
+    console.error(`[pool] Provision failed for ${instance.id} (agent=${agentName}), releasing claim:`, err.message);
     await db.markIdle(instance.id, instance.railway_url);
     throw err;
   }
@@ -228,8 +229,8 @@ export async function provision(agentId, instructions, joinUrl) {
 
   // 4. Rename the Railway service for dashboard visibility
   try {
-    await railway.renameService(instance.railway_service_id, `convos-agent-${agentId}`);
-    console.log(`[pool] Renamed ${instance.id} → convos-agent-${agentId}`);
+    await railway.renameService(instance.railway_service_id, `convos-agent-${agentName}`);
+    console.log(`[pool] Renamed ${instance.id} → convos-agent-${agentName}`);
   } catch (err) {
     console.warn(`[pool] Failed to rename ${instance.id}:`, err.message);
   }
