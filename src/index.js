@@ -1135,6 +1135,6 @@ app.listen(PORT, async () => {
   console.log(`Pool manager listening on :${PORT}`);
   try {
     const counts = await db.countByStatus();
-    console.log(`[pool] Status: ${counts.provisioning} starting, ${counts.idle} ready, ${counts.claimed} claimed`);
+    console.log(`[pool] Status: ${counts.provisioning} provisioning, ${counts.idle} idle, ${counts.claimed} claimed`);
   } catch {}
 });

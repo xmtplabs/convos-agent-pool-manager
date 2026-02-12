@@ -35,7 +35,9 @@ let _backoffUntil = 0;
 const MAX_CONSECUTIVE_FAILURES = 3;
 const BACKOFF_MS = 5 * 60 * 1000; // 5 minutes
 
-const XMTP_ENV = process.env.INSTANCE_XMTP_ENV || "dev";
+const POOL_ENVIRONMENT = process.env.POOL_ENVIRONMENT || "dev";
+const IS_PRODUCTION = POOL_ENVIRONMENT === "production";
+const XMTP_ENV = process.env.INSTANCE_XMTP_ENV || (IS_PRODUCTION ? "production" : "dev");
 const ANTHROPIC_API_KEY_VALUE = process.env.INSTANCE_ANTHROPIC_API_KEY || "";
 
 // OpenClaw config written into each Sprite before the gateway starts.
@@ -102,7 +104,7 @@ export async function createInstance() {
   // 3–9: Setup, config, env, start, wait, checkpoint — clean up on failure
   try {
     // 3. Run setup in phases (separate exec calls to avoid WebSocket timeout)
-    const gitRef = process.env.OPENCLAW_GIT_REF || "main";
+    const gitRef = process.env.OPENCLAW_GIT_REF || (IS_PRODUCTION ? "main" : "staging");
 
     // Phase 1: Build tools + clone + pnpm install
     const setupScript = readFileSync(
@@ -293,7 +295,7 @@ export async function replenish() {
   const total = counts.provisioning + counts.idle + counts.claimed;
   const deficit = MIN_IDLE - (counts.idle + counts.provisioning);
 
-  const statusStr = `${counts.provisioning} starting, ${counts.idle} ready, ${counts.claimed} claimed`;
+  const statusStr = `${counts.provisioning} provisioning, ${counts.idle} idle, ${counts.claimed} claimed`;
 
   if (deficit <= 0) {
     if (statusStr !== _lastStatusStr) {

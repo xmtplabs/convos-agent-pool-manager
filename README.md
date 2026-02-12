@@ -1,6 +1,6 @@
 # Convos Agent Pool Manager
 
-Manages a pool of pre-warmed [convos-agent-railway-template](https://github.com/xmtplabs/convos-agent-railway-template) instances on [Railway](https://railway.com). Instances are created ahead of time so that when a user claims one, it's ready in seconds instead of minutes.
+Manages a pool of pre-warmed [OpenClaw](https://github.com/xmtplabs/openclaw) agent instances on [Fly.io Sprites](https://sprites.dev). Instances are created ahead of time so that when a user claims one, it's ready in seconds instead of minutes.
 
 ## How it works
 
@@ -9,29 +9,43 @@ Manages a pool of pre-warmed [convos-agent-railway-template](https://github.com/
                          │  Pool Manager │
                          │  (this repo)  │
                          └──┬───┬───┬───┘
-               creates      │   │   │      polls /pool/status
-            ┌───────────────┘   │   └───────────────┐
-            ▼                   ▼                    ▼
-    ┌──────────────┐   ┌──────────────┐     ┌──────────────┐
-    │    agent     │   │    agent     │     │    agent     │
-    │  instance 1  │   │  instance 2  │ ... │  instance N  │
-    │  (Railway)   │   │  (Railway)   │     │  (Railway)   │
-    └──────────────┘   └──────────────┘     └──────────────┘
+              creates       │   │   │      polls /convos/status
+           ┌────────────────┘   │   └────────────────┐
+           ▼                    ▼                     ▼
+   ┌──────────────┐    ┌──────────────┐      ┌──────────────┐
+   │   OpenClaw   │    │   OpenClaw   │      │   OpenClaw   │
+   │  instance 1  │    │  instance 2  │ ...  │  instance N  │
+   │  (Sprite)    │    │  (Sprite)    │      │  (Sprite)    │
+   └──────────────┘    └──────────────┘      └──────────────┘
 ```
 
-1. The pool manager creates Railway services from [xmtplabs/convos-agent-railway-template](https://github.com/xmtplabs/convos-agent-railway-template)
-2. It polls each instance's `/pool/status` endpoint until it reports `ready`
-3. Ready instances are marked **idle** and available for claiming
-4. When claimed via `POST /api/pool/claim`, the manager calls `/pool/provision` on the instance with the provided instructions, then backfills the pool
-5. Claimed instances are renamed in Railway so they're identifiable in the dashboard
+1. The pool manager creates a Fly.io Sprite, runs `scripts/sprite-setup.sh` to install OpenClaw from source, then starts the OpenClaw gateway
+2. It polls each instance's `/convos/status` endpoint until it reports `ready`
+3. A **golden checkpoint** is taken of the clean state (OpenClaw installed, gateway running, no XMTP identity)
+4. Ready instances are marked **idle** and available for claiming
+5. When claimed via `POST /api/pool/claim`, the manager writes `INSTRUCTIONS.md` and calls `/convos/conversation` (or `/convos/join`) on the gateway
+6. When recycled, the checkpoint is restored (~15s) instead of rebuilding from scratch (~5min)
 
-Instances are never destroyed by the pool manager — once claimed, they stay running.
+## Instance lifecycle
+
+```
+provisioning ──→ idle ──→ claimed ──→ recycled ──→ idle
+ (building)     (ready)   (in use)   (checkpoint   (ready again)
+                                      restored)
+```
+
+- **provisioning**: Sprite created, setup script running, gateway starting
+- **idle**: Gateway responding, golden checkpoint taken, waiting to be claimed
+- **claimed**: Bound to a conversation with custom instructions
+- **recycled**: Checkpoint restored, gateway restarted, returned to idle
+
+Instances are only destroyed when broken (heartbeat failure), explicitly drained, or during reconciliation.
 
 ## Related repos
 
 | Repo | Description |
 |------|-------------|
-| [convos-agent-railway-template](https://github.com/xmtplabs/convos-agent-railway-template) | The bot template deployed on each Railway instance. Must have pool mode support (`POOL_MODE=true` endpoints). |
+| [openclaw](https://github.com/xmtplabs/openclaw) | The AI agent framework. Cloned and built inside each Sprite. Provides the gateway HTTP server and Convos XMTP extension. |
 
 ## Setup
 
@@ -49,20 +63,6 @@ Copy `.env.example` to `.env` and fill in the values:
 cp .env.example .env
 ```
 
-| Variable | Description |
-|----------|-------------|
-| `PORT` | Server port (default `3001`) |
-| `POOL_API_KEY` | Shared secret for API auth (Bearer token) |
-| `RAILWAY_API_TOKEN` | Railway project-scoped API token |
-| `RAILWAY_PROJECT_ID` | Railway project ID |
-| `RAILWAY_ENVIRONMENT_ID` | Railway environment ID |
-| `RAILWAY_SOURCE_REPO` | GitHub repo to deploy (e.g. `xmtplabs/convos-agent-railway-template`) |
-| `INSTANCE_ANTHROPIC_API_KEY` | Anthropic API key injected into each instance |
-| `INSTANCE_XMTP_ENV` | XMTP environment (`dev` or `production`) |
-| `POOL_MIN_IDLE` | Minimum idle instances to maintain (default `3`) |
-| `POOL_MAX_TOTAL` | Maximum total instances (default `10`) |
-| `DATABASE_URL` | Neon Postgres connection string |
-
 Run the database migration:
 
 ```sh
@@ -75,21 +75,122 @@ Start the server:
 npm start
 ```
 
+Drain all idle instances (useful after code changes):
+
+```sh
+npm run drain:all
+```
+
+## Environment variables
+
+| Variable | Description |
+|----------|-------------|
+| `PORT` | Server port (default `3001`) |
+| `POOL_API_KEY` | Shared secret for API auth (Bearer token) |
+| `POOL_ENVIRONMENT` | `dev`, `staging`, or `production` — controls dashboard badge, safety confirms, and defaults for `INSTANCE_XMTP_ENV` and `OPENCLAW_GIT_REF` |
+| `SPRITE_TOKEN` | Fly.io Sprites API token |
+| `INSTANCE_ANTHROPIC_API_KEY` | Anthropic API key injected into each Sprite's OpenClaw config |
+| `INSTANCE_XMTP_ENV` | XMTP network. Optional — defaults to `production` if `POOL_ENVIRONMENT=production`, else `dev` |
+| `POOL_MIN_IDLE` | Minimum idle instances to maintain (default `3`) |
+| `POOL_MAX_TOTAL` | Maximum total instances (default `50`) |
+| `HEARTBEAT_INTERVAL_MS` | Interval for keep-alive pings to Sprites (default `20000`) |
+| `OPENCLAW_GIT_REF` | OpenClaw git branch to build inside Sprites. Optional — defaults to `main` if `POOL_ENVIRONMENT=production`, else `staging` |
+| `DATABASE_URL` | Neon Postgres connection string |
+
 ## API
 
-All endpoints (except `GET /` and `GET /healthz`) require a `Authorization: Bearer <POOL_API_KEY>` header.
+### Public (no auth)
 
-### `GET /`
+#### `GET /`
 
-Serves a web form for claiming an instance (name + instructions).
+Dashboard web UI for launching and managing agents.
 
-### `GET /healthz`
+#### `GET /healthz`
 
 Health check. Returns `{"ok": true}`.
 
-### `GET /api/pool/status`
+#### `GET /version`
 
-Returns pool counts and all instances.
+Returns build version and environment.
+
+```json
+{ "version": "2026-02-11:openclaw-gateway-direct", "environment": "staging" }
+```
+
+#### `GET /api/pool/counts`
+
+Pool counts by status.
+
+```json
+{ "provisioning": 2, "idle": 3, "claimed": 1 }
+```
+
+#### `GET /api/pool/agents`
+
+List all claimed (live) agents with their names, instructions, and invite URLs.
+
+### Auth required (`Authorization: Bearer <POOL_API_KEY>`)
+
+#### `POST /api/pool/claim`
+
+Claim an idle instance and provision it with instructions.
+
+```json
+{
+  "agentName": "tokyo-trip-planner",
+  "instructions": "You are a helpful trip planner for Tokyo.",
+  "joinUrl": "https://dev.convos.org/v2?i=..."
+}
+```
+
+`joinUrl` is optional — if provided, the agent joins an existing conversation instead of creating a new one.
+
+Returns:
+
+```json
+{
+  "inviteUrl": "https://dev.convos.org/v2?i=...",
+  "conversationId": "abc123",
+  "instanceId": "rnM8UBQ_fZCz",
+  "joined": false
+}
+```
+
+#### `DELETE /api/pool/instances`
+
+List all claimed instance IDs (used by the dashboard for bulk operations).
+
+#### `DELETE /api/pool/instances/:id`
+
+Recycle a claimed instance — restores the golden checkpoint, restarts the gateway, and returns it to idle.
+
+#### `DELETE /api/pool/instances/:id/destroy`
+
+Permanently destroy an instance — deletes the Sprite and removes it from the database.
+
+#### `POST /api/pool/replenish`
+
+Manually create N new instances.
+
+```json
+{ "count": 3 }
+```
+
+#### `POST /api/pool/drain`
+
+Destroy N idle instances from the pool.
+
+```json
+{ "count": 5 }
+```
+
+#### `POST /api/pool/reconcile`
+
+Verify database state against Sprites API and clean up orphaned records.
+
+#### `GET /api/pool/status`
+
+Full pool status — counts and all instances.
 
 ```json
 {
@@ -98,39 +199,6 @@ Returns pool counts and all instances.
 }
 ```
 
-### `POST /api/pool/claim`
+#### `GET /api/pool/debug/:id`
 
-Claims an idle instance and provisions it with instructions.
-
-```json
-{
-  "agentId": "tokyo-trip-planner",
-  "instructions": "You are a helpful trip planner for Tokyo."
-}
-```
-
-Returns:
-
-```json
-{
-  "inviteUrl": "https://dev.convos.org/v2?i=...",
-  "qrDataUrl": "data:image/png;base64,...",
-  "conversationId": "abc123",
-  "instanceId": "rnM8UBQ_fZCz"
-}
-```
-
-### `POST /api/pool/replenish`
-
-Manually triggers a poll + replenish cycle.
-
-## Instance lifecycle
-
-```
-provisioning  →  idle  →  claimed
-    (deploying)    (ready)    (in use, never destroyed)
-```
-
-The background tick runs every 30 seconds:
-1. Polls all `provisioning` instances — if `/pool/status` returns `ready`, marks them `idle`
-2. Checks if idle + provisioning count is below `POOL_MIN_IDLE` — if so, creates new instances up to `POOL_MAX_TOTAL`
+Probe a Sprite to inspect running processes, gateway status, environment, listening ports, and Sprite API info.
