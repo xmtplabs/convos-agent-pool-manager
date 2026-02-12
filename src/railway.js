@@ -51,8 +51,8 @@ export async function createService(name, variables = {}) {
   // not supported in ServiceCreateInput).
   const rootDir = process.env.RAILWAY_SOURCE_ROOT_DIR;
   if (rootDir) {
-    await updateServiceInstance(serviceId, { rootDirectory: rootDir });
-    console.log(`[railway]   Set rootDirectory: ${rootDir}`);
+    await updateServiceInstance(serviceId, { rootDirectory: rootDir, autoDeploys: false });
+    console.log(`[railway]   Set rootDirectory: ${rootDir}, autoDeploys: false`);
   }
 
   // serviceCreate always deploys from the repo's default branch (main)
