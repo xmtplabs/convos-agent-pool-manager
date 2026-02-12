@@ -99,7 +99,8 @@ async function cleanupInstance(inst, reason) {
   await db.deleteInstance(inst.id);
 }
 
-// Reconcile DB state with Railway — remove orphaned entries where the service no longer exists.
+// Reconcile DB state with Railway — remove orphaned entries where the service
+// no longer exists OR where the instance is idle but not actually reachable.
 export async function reconcile() {
   const instances = await db.listAll();
   // Only check non-claimed instances (provisioning + idle) to avoid disrupting active agents
@@ -112,6 +113,27 @@ export async function reconcile() {
       console.log(`[reconcile] ${inst.id} (${inst.status}) — Railway service gone, removing from DB`);
       await db.deleteInstance(inst.id);
       cleaned++;
+      continue;
+    }
+
+    // For idle instances, verify they're actually reachable. A service can exist
+    // on Railway but be undeployed/crashed — these ghost entries block the pool.
+    if (inst.status === "idle" && inst.railway_url) {
+      try {
+        const res = await fetch(`${inst.railway_url}/convos/status`, {
+          headers: { Authorization: `Bearer ${POOL_API_KEY}` },
+          signal: AbortSignal.timeout(5000),
+        });
+        if (!res.ok) {
+          console.log(`[reconcile] ${inst.id} idle but unreachable (HTTP ${res.status}) — cleaning up`);
+          await cleanupInstance(inst, "idle but unreachable");
+          cleaned++;
+        }
+      } catch {
+        console.log(`[reconcile] ${inst.id} idle but unreachable (timeout/error) — cleaning up`);
+        await cleanupInstance(inst, "idle but unreachable");
+        cleaned++;
+      }
     }
   }
 
