@@ -871,7 +871,7 @@ app.get("/", (_req, res) => {
     f.onsubmit=async function(e){
       e.preventDefault();
       var agentName=f.name.value.trim();
-      var payload={agentId:agentName,instructions:f.instructions.value.trim()};
+      var payload={agentName:agentName,instructions:f.instructions.value.trim()};
       if(isJoinMode){
         var jUrl=joinUrlInput.value.trim();
         if(!jUrl){errorEl.textContent='Conversation link is required';errorEl.style.display='block';return;}
@@ -966,12 +966,12 @@ app.get("/api/pool/status", requireAuth, async (_req, res) => {
 
 // Launch an agent — claim an idle instance and provision it with instructions.
 app.post("/api/pool/claim", requireAuth, async (req, res) => {
-  const { agentId, instructions, joinUrl } = req.body || {};
+  const { agentName, instructions, joinUrl } = req.body || {};
   if (!instructions || typeof instructions !== "string") {
     return res.status(400).json({ error: "instructions (string) is required" });
   }
-  if (!agentId || typeof agentId !== "string") {
-    return res.status(400).json({ error: "agentId (string) is required" });
+  if (!agentName || typeof agentName !== "string") {
+    return res.status(400).json({ error: "agentName (string) is required" });
   }
   if (joinUrl && typeof joinUrl !== "string") {
     return res.status(400).json({ error: "joinUrl must be a string if provided" });
@@ -984,7 +984,7 @@ app.post("/api/pool/claim", requireAuth, async (req, res) => {
   }
 
   try {
-    const result = await pool.provision(agentId, instructions, joinUrl || undefined);
+    const result = await pool.provision(agentName, instructions, joinUrl || undefined);
     if (!result) {
       return res.status(503).json({
         error: "No idle instances available. Try again in a few minutes.",
@@ -993,21 +993,6 @@ app.post("/api/pool/claim", requireAuth, async (req, res) => {
     res.json(result);
   } catch (err) {
     console.error("[api] Launch failed:", err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Redirect to the setup page of an idle instance
-app.get("/api/pool/setup", requireAuth, async (_req, res) => {
-  try {
-    const instance = await db.findIdle();
-    if (!instance) {
-      return res.status(503).json({
-        error: "No idle instances available. Try again in a few minutes.",
-      });
-    }
-    res.redirect(`${instance.railway_url}/setup`);
-  } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });

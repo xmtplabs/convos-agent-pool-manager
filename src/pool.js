@@ -9,14 +9,14 @@ const STUCK_TIMEOUT_MS = parseInt(process.env.POOL_STUCK_TIMEOUT_MS || String(15
 const RECONCILE_INTERVAL_MS = parseInt(process.env.POOL_RECONCILE_INTERVAL_MS || String(5 * 60 * 1000), 10);
 let _lastReconcile = 0;
 
+const IS_PRODUCTION = (process.env.POOL_ENVIRONMENT || "staging") === "production";
+
 function instanceEnvVars() {
   return {
-    POOL_MODE: "true",
-    POOL_API_KEY: POOL_API_KEY,
-    POOL_AUTH_CHOICE: process.env.POOL_AUTH_CHOICE || "apiKey",
     ANTHROPIC_API_KEY: process.env.INSTANCE_ANTHROPIC_API_KEY || "",
     XMTP_ENV: process.env.INSTANCE_XMTP_ENV || "dev",
-    SETUP_PASSWORD: process.env.INSTANCE_SETUP_PASSWORD || "pool-managed",
+    GATEWAY_AUTH_TOKEN: POOL_API_KEY,
+    OPENCLAW_GIT_REF: process.env.OPENCLAW_GIT_REF || (IS_PRODUCTION ? "main" : "staging"),
     PORT: "8080",
   };
 }
@@ -45,14 +45,14 @@ export async function createInstance() {
   return { id, serviceId, url, name };
 }
 
-// Check provisioning instances — if their /pool/status says ready, mark idle.
+// Check provisioning instances — if their /convos/status says ready, mark idle.
 // If stuck beyond STUCK_TIMEOUT_MS, verify against Railway and clean up dead ones.
 export async function pollProvisioning() {
   const instances = await db.listProvisioning();
   for (const inst of instances) {
     if (!inst.railway_url) continue;
     try {
-      const res = await fetch(`${inst.railway_url}/pool/status`, {
+      const res = await fetch(`${inst.railway_url}/convos/status`, {
         headers: { Authorization: `Bearer ${POOL_API_KEY}` },
         signal: AbortSignal.timeout(5000),
       });
@@ -67,7 +67,7 @@ export async function pollProvisioning() {
         continue;
       }
       const status = await res.json();
-      if (status.ready && !status.provisioned) {
+      if (status.ready && !status.conversation) {
         await db.markIdle(inst.id, inst.railway_url);
         console.log(`[pool] ${inst.id} is now idle`);
       }
@@ -155,38 +155,81 @@ export async function replenish() {
   return results;
 }
 
-// Launch an agent — provision an idle instance with instructions.
+// Launch an agent — claim an idle instance and provision it directly via OpenClaw.
 // If joinUrl is provided, join an existing conversation instead of creating one.
-// Returns { inviteUrl, qrDataUrl, conversationId, joined } or null if no idle instances.
-export async function provision(agentId, instructions, joinUrl) {
+// Returns { inviteUrl, conversationId, instanceId, joined } or null if no idle instances.
+export async function provision(agentName, instructions, joinUrl) {
   // 1. Atomically claim an idle instance
-  const instance = await db.claimOne(agentId);
+  const instance = await db.claimOne(agentName);
   if (!instance) return null;
 
-  console.log(`[pool] Launching ${instance.id} for agentId="${agentId}"${joinUrl ? " (join mode)" : ""}`);
+  console.log(`[pool] Launching ${instance.id} for agentName="${agentName}"${joinUrl ? " (join mode)" : ""}`);
 
-  // 2. Call /pool/provision on the instance
-  const provisionBody = { instructions, name: agentId };
-  if (joinUrl) provisionBody.joinUrl = joinUrl;
+  const headers = {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${POOL_API_KEY}`,
+  };
 
-  console.log(`[pool] POST ${instance.railway_url}/pool/provision name="${provisionBody.name}"${joinUrl ? ` joinUrl="${joinUrl.slice(0, 40)}..."` : ""}`);
-  const res = await fetch(`${instance.railway_url}/pool/provision`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${POOL_API_KEY}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(provisionBody),
-  });
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Provision failed on ${instance.id}: ${res.status} ${text}`);
+  // 2. Call OpenClaw gateway directly — one call writes instructions,
+  //    creates XMTP identity, creates conversation, starts message stream.
+  let result;
+  try {
+    if (joinUrl) {
+      console.log(`[pool] POST ${instance.railway_url}/convos/join`);
+      const res = await fetch(`${instance.railway_url}/convos/join`, {
+        method: "POST",
+        headers,
+        signal: AbortSignal.timeout(30_000),
+        body: JSON.stringify({
+          inviteUrl: joinUrl,
+          profileName: agentName,
+          env: process.env.INSTANCE_XMTP_ENV || "dev",
+          instructions,
+        }),
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`Join failed on ${instance.id} (agent=${agentName}): ${res.status} ${text}`);
+      }
+      result = await res.json();
+      if (result.conversationId == null) {
+        throw new Error(`OpenClaw API returned unexpected response format: missing conversationId (join mode)`);
+      }
+      result.joined = true;
+    } else {
+      console.log(`[pool] POST ${instance.railway_url}/convos/conversation`);
+      const res = await fetch(`${instance.railway_url}/convos/conversation`, {
+        method: "POST",
+        headers,
+        signal: AbortSignal.timeout(30_000),
+        body: JSON.stringify({
+          name: agentName,
+          profileName: agentName,
+          env: process.env.INSTANCE_XMTP_ENV || "dev",
+          instructions,
+        }),
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`Create failed on ${instance.id} (agent=${agentName}): ${res.status} ${text}`);
+      }
+      result = await res.json();
+      if (result.conversationId == null) {
+        throw new Error(`OpenClaw API returned unexpected response format: missing conversationId (create mode)`);
+      }
+      result.joined = false;
+    }
+  } catch (err) {
+    console.error(`[pool] Provision failed for ${instance.id} (agent=${agentName}), releasing claim:`, err.message);
+    try {
+      await db.markIdle(instance.id, instance.railway_url);
+    } catch (releaseErr) {
+      console.error(`[pool] Failed to release claim for ${instance.id}:`, releaseErr.message);
+    }
+    throw err;
   }
 
-  const result = await res.json();
-
-  // 3. Store the invite URL, conversation ID, and instructions
+  // 3. Store results in DB
   await db.setClaimed(instance.id, {
     inviteUrl: result.inviteUrl || joinUrl || null,
     conversationId: result.conversationId,
@@ -194,10 +237,10 @@ export async function provision(agentId, instructions, joinUrl) {
     joinUrl: joinUrl || null,
   });
 
-  // 4. Rename the Railway service so it's identifiable in the dashboard
+  // 4. Rename the Railway service for dashboard visibility
   try {
-    await railway.renameService(instance.railway_service_id, `convos-agent-${agentId}`);
-    console.log(`[pool] Renamed ${instance.id} → convos-agent-${agentId}`);
+    await railway.renameService(instance.railway_service_id, `convos-agent-${agentName}`);
+    console.log(`[pool] Renamed ${instance.id} → convos-agent-${agentName}`);
   } catch (err) {
     console.warn(`[pool] Failed to rename ${instance.id}:`, err.message);
   }
@@ -209,10 +252,9 @@ export async function provision(agentId, instructions, joinUrl) {
 
   return {
     inviteUrl: result.inviteUrl || null,
-    qrDataUrl: result.qrDataUrl || null,
     conversationId: result.conversationId,
     instanceId: instance.id,
-    joined: !!result.joined,
+    joined: result.joined,
   };
 }
 
