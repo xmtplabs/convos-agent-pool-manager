@@ -49,7 +49,7 @@ Instances are only destroyed when broken (heartbeat failure), explicitly drained
 
 ## Setup
 
-Requires Node.js 22+ and a [Neon](https://neon.tech) Postgres database.
+Requires Node.js 22+ and [Docker](https://www.docker.com/) (for local Postgres).
 
 ```sh
 git clone https://github.com/xmtplabs/convos-agent-pool-manager.git
@@ -61,6 +61,12 @@ Copy `.env.example` to `.env` and fill in the values:
 
 ```sh
 cp .env.example .env
+```
+
+Start a local Postgres:
+
+```sh
+docker compose up -d
 ```
 
 Run the database migration:
@@ -95,7 +101,7 @@ npm run drain:all
 | `POOL_MAX_TOTAL` | Maximum total instances (default `50`) |
 | `HEARTBEAT_INTERVAL_MS` | Interval for keep-alive pings to Sprites (default `20000`) |
 | `OPENCLAW_GIT_REF` | OpenClaw git branch to build inside Sprites. Optional — defaults to `main` if `POOL_ENVIRONMENT=production`, else `staging` |
-| `DATABASE_URL` | Neon Postgres connection string |
+| `DATABASE_URL` | Postgres connection string. Local dev: `postgresql://postgres:postgres@localhost:5433/pool_manager` (via Docker Compose). Deployed: Neon connection string. |
 
 ## API
 

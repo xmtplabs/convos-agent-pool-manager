@@ -41,7 +41,7 @@ export async function claimOne(agentName) {
     )
     RETURNING *
   `;
-  return result.rows[0] || null;
+  return result[0] || null;
 }
 
 export async function setClaimed(id, { inviteUrl, conversationId, instructions, joinUrl }) {
@@ -62,7 +62,7 @@ export async function listClaimed() {
     WHERE status = 'claimed'
     ORDER BY claimed_at DESC
   `;
-  return result.rows;
+  return result;
 }
 
 export async function countByStatus() {
@@ -72,7 +72,7 @@ export async function countByStatus() {
     GROUP BY status
   `;
   const counts = { provisioning: 0, idle: 0, claimed: 0 };
-  for (const row of result.rows) {
+  for (const row of result) {
     counts[row.status] = row.count;
   }
   return counts;
@@ -84,7 +84,7 @@ export async function listProvisioning() {
     WHERE status = 'provisioning'
     ORDER BY created_at ASC
   `;
-  return result.rows;
+  return result;
 }
 
 export async function listAll() {
@@ -92,7 +92,7 @@ export async function listAll() {
     SELECT * FROM pool_instances
     ORDER BY created_at DESC
   `;
-  return result.rows;
+  return result;
 }
 
 export async function findIdle() {
@@ -102,7 +102,7 @@ export async function findIdle() {
     ORDER BY created_at ASC
     LIMIT 1
   `;
-  return result.rows[0] || null;
+  return result[0] || null;
 }
 
 export async function listIdle(limit) {
@@ -112,7 +112,7 @@ export async function listIdle(limit) {
     ORDER BY created_at ASC
     LIMIT ${limit}
   `;
-  return result.rows;
+  return result;
 }
 
 export async function deleteInstance(id) {
