@@ -127,15 +127,70 @@ export async function reconcile() {
           signal: AbortSignal.timeout(5000),
         });
         if (!res.ok) {
-          console.log(`[reconcile] ${inst.id} (${inst.status}) unreachable (HTTP ${res.status}) — cleaning up`);
-          await cleanupInstance(inst, `${inst.status} but unreachable`);
-          cleaned++;
+          // For claimed instances, use retry logic to avoid destroying active sessions
+          // on transient failures (network hiccups, timeouts, temporary 5xx errors)
+          if (inst.status === "claimed") {
+            const failures = await db.incrementHealthCheckFailures(inst.id);
+            const threshold = 3;
+            if (failures >= threshold) {
+              console.log(`[reconcile] ${inst.id} (${inst.status}) unreachable (HTTP ${res.status}) — ${failures} consecutive failures, cleaning up`);
+              try {
+                await cleanupInstance(inst, `${inst.status} but unreachable after ${failures} failures`);
+                cleaned++;
+              } catch (err) {
+                console.warn(`[reconcile] ${inst.id} cleanup failed: ${err.message}`);
+              }
+            } else {
+              console.log(`[reconcile] ${inst.id} (${inst.status}) unreachable (HTTP ${res.status}) — failure ${failures}/${threshold}, will retry`);
+            }
+          } else {
+            // Idle instances can be cleaned up immediately
+            console.log(`[reconcile] ${inst.id} (${inst.status}) unreachable (HTTP ${res.status}) — cleaning up`);
+            try {
+              await cleanupInstance(inst, `${inst.status} but unreachable`);
+              cleaned++;
+            } catch (err) {
+              console.warn(`[reconcile] ${inst.id} cleanup failed: ${err.message}`);
+            }
+          }
+        } else {
+          // Successful health check — reset failure count if any
+          if (inst.health_check_failures > 0) {
+            await db.resetHealthCheckFailures(inst.id);
+          }
         }
       } catch {
-        console.log(`[reconcile] ${inst.id} (${inst.status}) unreachable (timeout/error) — cleaning up`);
-        await cleanupInstance(inst, `${inst.status} but unreachable`);
-        cleaned++;
+        // For claimed instances, use retry logic to avoid destroying active sessions
+        // on transient failures (network hiccups, timeouts, temporary 5xx errors)
+        if (inst.status === "claimed") {
+          const failures = await db.incrementHealthCheckFailures(inst.id);
+          const threshold = 3;
+          if (failures >= threshold) {
+            console.log(`[reconcile] ${inst.id} (${inst.status}) unreachable (timeout/error) — ${failures} consecutive failures, cleaning up`);
+            try {
+              await cleanupInstance(inst, `${inst.status} but unreachable after ${failures} failures`);
+              cleaned++;
+            } catch (err) {
+              console.warn(`[reconcile] ${inst.id} cleanup failed: ${err.message}`);
+            }
+          } else {
+            console.log(`[reconcile] ${inst.id} (${inst.status}) unreachable (timeout/error) — failure ${failures}/${threshold}, will retry`);
+          }
+        } else {
+          // Idle instances can be cleaned up immediately
+          console.log(`[reconcile] ${inst.id} (${inst.status}) unreachable (timeout/error) — cleaning up`);
+          try {
+            await cleanupInstance(inst, `${inst.status} but unreachable`);
+            cleaned++;
+          } catch (err) {
+            console.warn(`[reconcile] ${inst.id} cleanup failed: ${err.message}`);
+          }
+        }
       }
+    } else {
+      console.warn(`[reconcile] ${inst.id} (${inst.status}) has no railway_url — removing orphaned entry`);
+      await db.deleteInstance(inst.id);
+      cleaned++;
     }
   }
 

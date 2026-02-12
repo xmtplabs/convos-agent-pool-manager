@@ -60,6 +60,19 @@ async function migrate() {
     END $$
   `;
 
+  // Add health_check_failures column if missing (for retry logic on claimed instances)
+  await sql`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'pool_instances' AND column_name = 'health_check_failures'
+      ) THEN
+        ALTER TABLE pool_instances ADD COLUMN health_check_failures INT NOT NULL DEFAULT 0;
+      END IF;
+    END $$
+  `;
+
   console.log("Migration complete.");
   process.exit(0);
 }
