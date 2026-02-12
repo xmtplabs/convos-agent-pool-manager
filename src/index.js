@@ -985,21 +985,6 @@ app.post("/api/pool/claim", requireAuth, async (req, res) => {
   }
 });
 
-// Redirect to the setup page of an idle instance
-app.get("/api/pool/setup", requireAuth, async (_req, res) => {
-  try {
-    const instance = await db.findIdle();
-    if (!instance) {
-      return res.status(503).json({
-        error: "No idle instances available. Try again in a few minutes.",
-      });
-    }
-    res.redirect(`${instance.railway_url}/setup`);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
 // Manually trigger a replenish cycle, optionally creating N instances
 app.post("/api/pool/replenish", requireAuth, async (req, res) => {
   try {
