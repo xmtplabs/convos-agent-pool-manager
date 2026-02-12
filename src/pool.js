@@ -171,6 +171,10 @@ export async function reconcile() {
           cleaned++;
         }
       }
+    } else {
+      console.warn(`[reconcile] ${inst.id} (${inst.status}) has no railway_url — removing orphaned entry`);
+      await db.deleteInstance(inst.id);
+      cleaned++;
     }
   }
 
