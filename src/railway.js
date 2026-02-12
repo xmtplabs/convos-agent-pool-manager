@@ -47,6 +47,14 @@ export async function createService(name, variables = {}) {
 
   const serviceId = data.serviceCreate.id;
 
+  // Set rootDirectory for monorepo support (must be done via serviceInstanceUpdate,
+  // not supported in ServiceCreateInput).
+  const rootDir = process.env.RAILWAY_SOURCE_ROOT_DIR;
+  if (rootDir) {
+    await updateServiceInstance(serviceId, { rootDirectory: rootDir });
+    console.log(`[railway]   Set rootDirectory: ${rootDir}`);
+  }
+
   // serviceCreate always deploys from the repo's default branch (main)
   // regardless of the branch field. To build from the correct branch:
   // 1. Cancel the initial main deployment that serviceCreate auto-triggered
@@ -142,6 +150,17 @@ export async function renameService(serviceId, name) {
       serviceUpdate(id: $id, input: $input) { id }
     }`,
     { id: serviceId, input: { name } }
+  );
+}
+
+export async function updateServiceInstance(serviceId, settings = {}) {
+  const environmentId = process.env.RAILWAY_ENVIRONMENT_ID;
+
+  await gql(
+    `mutation($serviceId: String!, $environmentId: String!, $input: ServiceInstanceUpdateInput!) {
+      serviceInstanceUpdate(serviceId: $serviceId, environmentId: $environmentId, input: $input)
+    }`,
+    { serviceId, environmentId, input: settings }
   );
 }
 
