@@ -175,10 +175,8 @@ The background tick runs every 30 seconds:
 
 Three Railway environments share the same project:
 
-| Environment | Pool Manager URL | XMTP Network |
-|-------------|-----------------|---------------|
-| dev | `convos-agent-pool-manager-dev.up.railway.app` | dev |
-| staging | `convos-agents-dev.up.railway.app` | dev |
-| production | `convos-agents.up.railway.app` | production |
-
-Each environment has its own `RAILWAY_SOURCE_BRANCH`, `RAILWAY_API_TOKEN`, `DATABASE_URL`, and `RAILWAY_ENVIRONMENT_ID`.
+| Environment | Pool Manager URL | XMTP Network | Source Branch |
+|-------------|-----------------|---------------|---------------|
+| dev | `convos-agent-pool-manager-dev.up.railway.app` | dev | *(your branch)* |
+| staging | `convos-agents-dev.up.railway.app` | dev | `staging` |
+| production | `convos-agents.up.railway.app` | production | `main` |
