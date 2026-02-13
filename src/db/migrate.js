@@ -39,7 +39,10 @@ async function migrate() {
 
     // Delete non-claimed rows (no useful metadata)
     const deleted = await sql`DELETE FROM agent_metadata WHERE agent_name IS NULL`;
-    console.log(`  Cleaned ${deleted.count || 0} non-claimed rows`);
+    console.log(`  Cleaned ${deleted.rowCount || 0} non-claimed rows`);
+
+    // Match fresh install schema: agent_name should be NOT NULL
+    await sql`ALTER TABLE agent_metadata ALTER COLUMN agent_name SET NOT NULL`;
 
     console.log("Migration complete.");
   } else {
