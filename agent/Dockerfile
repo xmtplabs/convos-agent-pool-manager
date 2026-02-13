@@ -10,7 +10,7 @@ RUN corepack enable
 
 WORKDIR /openclaw
 
-ARG OPENCLAW_CACHE_BUST=3
+ARG OPENCLAW_CACHE_BUST=4
 ARG OPENCLAW_GIT_REPO=https://github.com/xmtplabs/openclaw.git
 ARG OPENCLAW_GIT_REF=staging
 RUN echo "cache-bust=${OPENCLAW_CACHE_BUST}" \
