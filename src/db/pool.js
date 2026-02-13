@@ -3,7 +3,15 @@ import { sql } from "./connection.js";
 export async function insertInstance({ id, railwayServiceId, railwayUrl }) {
   await sql`
     INSERT INTO pool_instances (id, railway_service_id, railway_url, status)
-    VALUES (${id}, ${railwayServiceId}, ${railwayUrl}, 'provisioning')
+    VALUES (${id}, ${railwayServiceId}, ${railwayUrl || null}, 'provisioning')
+  `;
+}
+
+export async function updateInstanceUrl(id, railwayUrl) {
+  await sql`
+    UPDATE pool_instances
+    SET railway_url = ${railwayUrl}, updated_at = NOW()
+    WHERE id = ${id}
   `;
 }
 

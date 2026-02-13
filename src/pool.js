@@ -22,25 +22,33 @@ function instanceEnvVars() {
 }
 
 // Create a single new Railway service and register it in the DB.
+// Order: createService → insertInstance (no URL) → createDomain → updateUrl
+// This ensures the DB record exists as early as possible so reconcile can
+// detect orphans if we crash between steps.
 export async function createInstance() {
   const id = nanoid(12);
   const name = `convos-agent-${id}`;
 
   console.log(`[pool] Creating instance ${name}...`);
 
-  // 1. Create Railway service from repo (env vars passed inline to avoid
-  //    a separate setVariables call that would trigger another main deploy)
+  // 1. Create Railway service from repo
   const serviceId = await railway.createService(name, instanceEnvVars());
   console.log(`[pool]   Railway service created: ${serviceId}`);
+
+  // 2. Insert DB record immediately (railway_url=null for now).
+  //    pollProvisioning skips records with no URL, and the stuck timeout
+  //    will clean up if domain creation fails.
+  await db.insertInstance({ id, railwayServiceId: serviceId });
+  console.log(`[pool]   Registered as provisioning (no URL yet)`);
 
   // 3. Generate public domain
   const domain = await railway.createDomain(serviceId);
   const url = `https://${domain}`;
   console.log(`[pool]   Domain: ${url}`);
 
-  // 4. Insert into DB as 'provisioning'
-  await db.insertInstance({ id, railwayServiceId: serviceId, railwayUrl: url });
-  console.log(`[pool]   Registered as provisioning`);
+  // 4. Update DB with the URL so pollProvisioning can reach it
+  await db.updateInstanceUrl(id, url);
+  console.log(`[pool]   URL set: ${url}`);
 
   return { id, serviceId, url, name };
 }
@@ -50,7 +58,17 @@ export async function createInstance() {
 export async function pollProvisioning() {
   const instances = await db.listProvisioning();
   for (const inst of instances) {
-    if (!inst.railway_url) continue;
+    // No URL yet — can't health-check, but still enforce stuck timeout.
+    // This happens when createInstance() inserted the DB record but failed
+    // before createDomain/updateUrl completed.
+    if (!inst.railway_url) {
+      const age = Date.now() - new Date(inst.created_at).getTime();
+      if (age > STUCK_TIMEOUT_MS) {
+        console.warn(`[pool] ${inst.id} stuck in provisioning for ${Math.round(age / 60000)}min (no URL) — cleaning up`);
+        await cleanupInstance(inst, "stuck in provisioning (no URL)");
+      }
+      continue;
+    }
     try {
       const res = await fetch(`${inst.railway_url}/convos/status`, {
         headers: { Authorization: `Bearer ${POOL_API_KEY}` },
@@ -99,103 +117,135 @@ async function cleanupInstance(inst, reason) {
   await db.deleteInstance(inst.id);
 }
 
-// Reconcile DB state with Railway — remove orphaned entries where the service
-// no longer exists OR where the instance is not actually reachable.
-// Checks ALL statuses (idle + claimed) — a dead claimed instance means a user's
-// agent is silently gone, which is worse than a dead idle one.
-// Provisioning instances are skipped since pollProvisioning() handles those.
+// Handle an unreachable instance — idle instances are cleaned up immediately,
+// claimed instances get a 3-strike retry to avoid killing active sessions on
+// transient failures.
+async function handleUnreachable(inst, reason) {
+  if (inst.status === "claimed") {
+    const failures = await db.incrementHealthCheckFailures(inst.id);
+    const threshold = 3;
+    if (failures >= threshold) {
+      console.log(`[reconcile] ${inst.id} (claimed) ${reason} — ${failures} consecutive failures, cleaning up`);
+      await cleanupInstance(inst, `claimed but unreachable after ${failures} failures`);
+      return true;
+    }
+    console.log(`[reconcile] ${inst.id} (claimed) ${reason} — failure ${failures}/${threshold}, will retry`);
+    return false;
+  }
+  // Idle instances can be cleaned up immediately
+  console.log(`[reconcile] ${inst.id} (${inst.status}) ${reason} — cleaning up`);
+  await cleanupInstance(inst, `${inst.status} but unreachable`);
+  return true;
+}
+
+// Health-check a single non-provisioning instance. Returns true if it was cleaned up.
+async function healthCheckInstance(inst) {
+  if (!inst.railway_url) {
+    console.warn(`[reconcile] ${inst.id} (${inst.status}) has no railway_url — removing orphaned entry`);
+    await db.deleteInstance(inst.id);
+    return true;
+  }
+
+  try {
+    const res = await fetch(`${inst.railway_url}/convos/status`, {
+      headers: { Authorization: `Bearer ${POOL_API_KEY}` },
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) {
+      return await handleUnreachable(inst, `unreachable (HTTP ${res.status})`);
+    }
+    // Successful health check — reset failure count if any
+    if (inst.health_check_failures > 0) {
+      await db.resetHealthCheckFailures(inst.id);
+    }
+    return false;
+  } catch {
+    return await handleUnreachable(inst, `unreachable (timeout/error)`);
+  }
+}
+
+// Reconcile DB state with Railway in both directions:
+//   Direction 1 (DB→Railway): Remove DB records whose Railway service is gone or unreachable.
+//   Direction 2 (Railway→DB): Delete Railway services not tracked in the DB (orphans).
+// Uses RAILWAY_ENVIRONMENT_ID to filter services so staging never touches production.
+const ORPHAN_GRACE_MS = 10 * 60 * 1000; // 10 minutes
+
 export async function reconcile() {
-  const instances = await db.listAll();
+  const myEnvId = process.env.RAILWAY_ENVIRONMENT_ID;
+  const [allServices, instances] = await Promise.all([
+    railway.listProjectServices(),
+    db.listAll(),
+  ]);
+
   const toCheck = instances.filter((i) => i.status !== "provisioning");
   let cleaned = 0;
 
-  for (const inst of toCheck) {
-    const service = await railway.getServiceInfo(inst.railway_service_id);
-    if (!service) {
-      console.log(`[reconcile] ${inst.id} (${inst.status}) — Railway service gone, removing from DB`);
-      await db.deleteInstance(inst.id);
-      cleaned++;
-      continue;
+  if (allServices === null) {
+    // API error — fall back to N+1 getServiceInfo for DB→Railway only, skip orphan detection
+    console.warn(`[reconcile] listProjectServices failed, falling back to per-service checks`);
+    for (const inst of toCheck) {
+      const service = await railway.getServiceInfo(inst.railway_service_id);
+      if (!service) {
+        console.log(`[reconcile] ${inst.id} (${inst.status}) — Railway service gone, removing from DB`);
+        await db.deleteInstance(inst.id);
+        cleaned++;
+        continue;
+      }
+      try {
+        if (await healthCheckInstance(inst)) cleaned++;
+      } catch (err) {
+        console.warn(`[reconcile] ${inst.id} health check error: ${err.message}`);
+      }
+    }
+  } else {
+    // Filter to services in our environment
+    const envServices = allServices.filter((s) => s.environmentIds.includes(myEnvId));
+    const railwayServiceMap = new Map(envServices.map((s) => [s.id, s]));
+
+    console.log(`[reconcile] ${envServices.length} services in env ${myEnvId}, ${instances.length} DB records`);
+
+    // Direction 1: DB → Railway
+    for (const inst of toCheck) {
+      if (!railwayServiceMap.has(inst.railway_service_id)) {
+        console.log(`[reconcile] ${inst.id} (${inst.status}) — Railway service gone (not in env), removing from DB`);
+        await db.deleteInstance(inst.id);
+        cleaned++;
+        continue;
+      }
+      try {
+        if (await healthCheckInstance(inst)) cleaned++;
+      } catch (err) {
+        console.warn(`[reconcile] ${inst.id} health check error: ${err.message}`);
+      }
     }
 
-    // Verify the instance is actually reachable. A service can exist on Railway
-    // but be undeployed/crashed — these ghost entries block the pool.
-    if (inst.railway_url) {
-      try {
-        const res = await fetch(`${inst.railway_url}/convos/status`, {
-          headers: { Authorization: `Bearer ${POOL_API_KEY}` },
-          signal: AbortSignal.timeout(5000),
-        });
-        if (!res.ok) {
-          // For claimed instances, use retry logic to avoid destroying active sessions
-          // on transient failures (network hiccups, timeouts, temporary 5xx errors)
-          if (inst.status === "claimed") {
-            const failures = await db.incrementHealthCheckFailures(inst.id);
-            const threshold = 3;
-            if (failures >= threshold) {
-              console.log(`[reconcile] ${inst.id} (${inst.status}) unreachable (HTTP ${res.status}) — ${failures} consecutive failures, cleaning up`);
-              try {
-                await cleanupInstance(inst, `${inst.status} but unreachable after ${failures} failures`);
-                cleaned++;
-              } catch (err) {
-                console.warn(`[reconcile] ${inst.id} cleanup failed: ${err.message}`);
-              }
-            } else {
-              console.log(`[reconcile] ${inst.id} (${inst.status}) unreachable (HTTP ${res.status}) — failure ${failures}/${threshold}, will retry`);
-            }
-          } else {
-            // Idle instances can be cleaned up immediately
-            console.log(`[reconcile] ${inst.id} (${inst.status}) unreachable (HTTP ${res.status}) — cleaning up`);
-            try {
-              await cleanupInstance(inst, `${inst.status} but unreachable`);
-              cleaned++;
-            } catch (err) {
-              console.warn(`[reconcile] ${inst.id} cleanup failed: ${err.message}`);
-            }
-          }
-        } else {
-          // Successful health check — reset failure count if any
-          if (inst.health_check_failures > 0) {
-            await db.resetHealthCheckFailures(inst.id);
-          }
-        }
-      } catch {
-        // For claimed instances, use retry logic to avoid destroying active sessions
-        // on transient failures (network hiccups, timeouts, temporary 5xx errors)
-        if (inst.status === "claimed") {
-          const failures = await db.incrementHealthCheckFailures(inst.id);
-          const threshold = 3;
-          if (failures >= threshold) {
-            console.log(`[reconcile] ${inst.id} (${inst.status}) unreachable (timeout/error) — ${failures} consecutive failures, cleaning up`);
-            try {
-              await cleanupInstance(inst, `${inst.status} but unreachable after ${failures} failures`);
-              cleaned++;
-            } catch (err) {
-              console.warn(`[reconcile] ${inst.id} cleanup failed: ${err.message}`);
-            }
-          } else {
-            console.log(`[reconcile] ${inst.id} (${inst.status}) unreachable (timeout/error) — failure ${failures}/${threshold}, will retry`);
-          }
-        } else {
-          // Idle instances can be cleaned up immediately
-          console.log(`[reconcile] ${inst.id} (${inst.status}) unreachable (timeout/error) — cleaning up`);
-          try {
-            await cleanupInstance(inst, `${inst.status} but unreachable`);
-            cleaned++;
-          } catch (err) {
-            console.warn(`[reconcile] ${inst.id} cleanup failed: ${err.message}`);
-          }
-        }
+    // Direction 2: Railway → DB (orphan detection)
+    const dbServiceIds = new Set(instances.map((i) => i.railway_service_id));
+    const agentOrphans = envServices.filter(
+      (s) =>
+        s.name.startsWith("convos-agent-") &&
+        s.name !== "convos-agent-pool-manager" &&
+        !dbServiceIds.has(s.id)
+    );
+
+    for (const svc of agentOrphans) {
+      const age = Date.now() - new Date(svc.createdAt).getTime();
+      if (age < ORPHAN_GRACE_MS) {
+        console.log(`[reconcile] Orphan ${svc.id} (${svc.name}) is only ${Math.round(age / 1000)}s old, skipping`);
+        continue;
       }
-    } else {
-      console.warn(`[reconcile] ${inst.id} (${inst.status}) has no railway_url — removing orphaned entry`);
-      await db.deleteInstance(inst.id);
-      cleaned++;
+      try {
+        await railway.deleteService(svc.id);
+        console.log(`[reconcile] Deleted orphan ${svc.id} (${svc.name})`);
+        cleaned++;
+      } catch (err) {
+        console.warn(`[reconcile] Failed to delete orphan ${svc.id}: ${err.message}`);
+      }
     }
   }
 
   if (cleaned > 0) {
-    console.log(`[reconcile] Cleaned ${cleaned} orphaned instance(s)`);
+    console.log(`[reconcile] Cleaned ${cleaned} instance(s)`);
   }
   return cleaned;
 }

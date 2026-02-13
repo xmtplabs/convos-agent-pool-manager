@@ -195,6 +195,42 @@ export async function deleteService(serviceId) {
   );
 }
 
+// List all services in the project with environment info.
+// Returns [{ id, name, createdAt, environmentIds }] or null on API error.
+export async function listProjectServices() {
+  const projectId = process.env.RAILWAY_PROJECT_ID;
+  try {
+    const data = await gql(
+      `query($id: String!) {
+        project(id: $id) {
+          services(first: 500) {
+            edges {
+              node {
+                id
+                name
+                createdAt
+                serviceInstances { edges { node { environmentId } } }
+              }
+            }
+          }
+        }
+      }`,
+      { id: projectId }
+    );
+    const edges = data.project?.services?.edges;
+    if (!edges) return null;
+    return edges.map((e) => ({
+      id: e.node.id,
+      name: e.node.name,
+      createdAt: e.node.createdAt,
+      environmentIds: (e.node.serviceInstances?.edges || []).map((si) => si.node.environmentId),
+    }));
+  } catch (err) {
+    console.warn(`[railway] listProjectServices failed: ${err.message}`);
+    return null;
+  }
+}
+
 // Check if a service still exists on Railway. Returns { id, name } or null.
 export async function getServiceInfo(serviceId) {
   try {
