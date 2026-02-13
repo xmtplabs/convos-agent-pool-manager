@@ -195,6 +195,66 @@ export async function deleteService(serviceId) {
   );
 }
 
+// List all services in the project with environment info and deploy status.
+// Returns [{ id, name, createdAt, environmentIds, deployStatus }] or null on API error.
+export async function listProjectServices() {
+  const projectId = process.env.RAILWAY_PROJECT_ID;
+  try {
+    const data = await gql(
+      `query($id: String!) {
+        project(id: $id) {
+          services(first: 500) {
+            edges {
+              node {
+                id
+                name
+                createdAt
+                serviceInstances { edges { node { environmentId } } }
+                deployments(first: 1) {
+                  edges { node { id status } }
+                }
+              }
+            }
+          }
+        }
+      }`,
+      { id: projectId }
+    );
+    const edges = data.project?.services?.edges;
+    if (!edges) return null;
+    return edges.map((e) => ({
+      id: e.node.id,
+      name: e.node.name,
+      createdAt: e.node.createdAt,
+      environmentIds: (e.node.serviceInstances?.edges || []).map((si) => si.node.environmentId),
+      deployStatus: e.node.deployments?.edges?.[0]?.node?.status || null,
+    }));
+  } catch (err) {
+    console.warn(`[railway] listProjectServices failed: ${err.message}`);
+    return null;
+  }
+}
+
+// Get the public domain for a service. Returns domain string or null.
+export async function getServiceDomain(serviceId) {
+  const environmentId = process.env.RAILWAY_ENVIRONMENT_ID;
+  try {
+    const data = await gql(
+      `query($serviceId: String!, $environmentId: String!) {
+        serviceDomains(serviceId: $serviceId, environmentId: $environmentId) {
+          serviceDomains { domain }
+          customDomains { domain }
+        }
+      }`,
+      { serviceId, environmentId }
+    );
+    const sd = data.serviceDomains;
+    return sd?.customDomains?.[0]?.domain || sd?.serviceDomains?.[0]?.domain || null;
+  } catch {
+    return null;
+  }
+}
+
 // Check if a service still exists on Railway. Returns { id, name } or null.
 export async function getServiceInfo(serviceId) {
   try {
