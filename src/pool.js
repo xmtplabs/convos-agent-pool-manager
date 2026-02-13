@@ -1,230 +1,372 @@
 import { nanoid } from "nanoid";
 import * as db from "./db/pool.js";
 import * as railway from "./railway.js";
+import * as cache from "./cache.js";
+import { deriveStatus } from "./status.js";
 
 const POOL_API_KEY = process.env.POOL_API_KEY;
 const MIN_IDLE = parseInt(process.env.POOL_MIN_IDLE || "3", 10);
 const MAX_TOTAL = parseInt(process.env.POOL_MAX_TOTAL || "10", 10);
-const STUCK_TIMEOUT_MS = parseInt(process.env.POOL_STUCK_TIMEOUT_MS || String(15 * 60 * 1000), 10);
-const RECONCILE_INTERVAL_MS = parseInt(process.env.POOL_RECONCILE_INTERVAL_MS || String(5 * 60 * 1000), 10);
-let _lastReconcile = 0;
+
+const IS_PRODUCTION = (process.env.POOL_ENVIRONMENT || "staging") === "production";
 
 function instanceEnvVars() {
   return {
-    POOL_MODE: "true",
-    POOL_API_KEY: POOL_API_KEY,
-    POOL_AUTH_CHOICE: process.env.POOL_AUTH_CHOICE || "apiKey",
     ANTHROPIC_API_KEY: process.env.INSTANCE_ANTHROPIC_API_KEY || "",
     XMTP_ENV: process.env.INSTANCE_XMTP_ENV || "dev",
-    SETUP_PASSWORD: process.env.INSTANCE_SETUP_PASSWORD || "pool-managed",
+    GATEWAY_AUTH_TOKEN: POOL_API_KEY,
+    OPENCLAW_GIT_REF: process.env.OPENCLAW_GIT_REF || (IS_PRODUCTION ? "main" : "staging"),
     PORT: "8080",
   };
 }
 
-// Create a single new Railway service and register it in the DB.
+// Health-check a single instance via /convos/status.
+// Returns parsed JSON on success, null on failure.
+async function healthCheck(url) {
+  try {
+    const res = await fetch(`${url}/convos/status`, {
+      headers: { Authorization: `Bearer ${POOL_API_KEY}` },
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+// Resolve a Railway service's public URL from its domain.
+async function getServiceUrl(serviceId) {
+  try {
+    const domain = await railway.getServiceDomain(serviceId);
+    return domain ? `https://${domain}` : null;
+  } catch {
+    return null;
+  }
+}
+
+// Create a single new Railway service (no DB write).
 export async function createInstance() {
   const id = nanoid(12);
   const name = `convos-agent-${id}`;
 
   console.log(`[pool] Creating instance ${name}...`);
 
-  // 1. Create Railway service from repo (env vars passed inline to avoid
-  //    a separate setVariables call that would trigger another main deploy)
   const serviceId = await railway.createService(name, instanceEnvVars());
   console.log(`[pool]   Railway service created: ${serviceId}`);
 
-  // 3. Generate public domain
   const domain = await railway.createDomain(serviceId);
   const url = `https://${domain}`;
   console.log(`[pool]   Domain: ${url}`);
 
-  // 4. Insert into DB as 'provisioning'
-  await db.insertInstance({ id, railwayServiceId: serviceId, railwayUrl: url });
-  console.log(`[pool]   Registered as provisioning`);
+  // Add to cache immediately as starting
+  cache.set(serviceId, {
+    serviceId,
+    id,
+    name,
+    url,
+    status: "starting",
+    createdAt: new Date().toISOString(),
+    deployStatus: "BUILDING",
+  });
 
   return { id, serviceId, url, name };
 }
 
-// Check provisioning instances — if their /pool/status says ready, mark idle.
-// If stuck beyond STUCK_TIMEOUT_MS, verify against Railway and clean up dead ones.
-export async function pollProvisioning() {
-  const instances = await db.listProvisioning();
-  for (const inst of instances) {
-    if (!inst.railway_url) continue;
-    try {
-      const res = await fetch(`${inst.railway_url}/pool/status`, {
-        headers: { Authorization: `Bearer ${POOL_API_KEY}` },
-        signal: AbortSignal.timeout(5000),
-      });
-      if (!res.ok) {
-        // Service responded but not ready (e.g. Railway 404 "Application not found")
-        // Check if stuck beyond timeout
-        const age = Date.now() - new Date(inst.created_at).getTime();
-        if (age > STUCK_TIMEOUT_MS) {
-          console.warn(`[pool] ${inst.id} stuck in provisioning for ${Math.round(age / 60000)}min (HTTP ${res.status}) — cleaning up`);
-          await cleanupInstance(inst, "stuck in provisioning");
-        }
-        continue;
-      }
-      const status = await res.json();
-      if (status.ready && !status.provisioned) {
-        await db.markIdle(inst.id, inst.railway_url);
-        console.log(`[pool] ${inst.id} is now idle`);
-      }
-    } catch {
-      const age = Date.now() - new Date(inst.created_at).getTime();
-      if (age > STUCK_TIMEOUT_MS) {
-        console.warn(`[pool] ${inst.id} stuck in provisioning for ${Math.round(age / 60000)}min — cleaning up`);
-        await cleanupInstance(inst, "stuck in provisioning");
-      }
-    }
-  }
-}
-
-// Verify an instance against Railway and remove it if the service is gone or unreachable.
-async function cleanupInstance(inst, reason) {
-  const service = await railway.getServiceInfo(inst.railway_service_id);
-  if (!service) {
-    console.log(`[pool] ${inst.id} — Railway service gone, removing from DB (${reason})`);
-    await db.deleteInstance(inst.id);
+// Unified tick: rebuild cache from Railway, health-check, replenish.
+export async function tick() {
+  const myEnvId = process.env.RAILWAY_ENVIRONMENT_ID;
+  if (!myEnvId) {
+    console.warn(`[tick] RAILWAY_ENVIRONMENT_ID not set, skipping tick`);
     return;
   }
-  // Service exists on Railway but is unreachable — delete it
-  console.log(`[pool] ${inst.id} — deleting unreachable Railway service and removing from DB (${reason})`);
-  try {
-    await railway.deleteService(inst.railway_service_id);
-  } catch (err) {
-    console.warn(`[pool] ${inst.id} — failed to delete Railway service: ${err.message}`);
-  }
-  await db.deleteInstance(inst.id);
-}
 
-// Reconcile DB state with Railway — remove orphaned entries where the service no longer exists.
-export async function reconcile() {
-  const instances = await db.listAll();
-  // Only check non-claimed instances (provisioning + idle) to avoid disrupting active agents
-  const toCheck = instances.filter((i) => i.status !== "claimed");
-  let cleaned = 0;
+  const allServices = await railway.listProjectServices();
 
-  for (const inst of toCheck) {
-    const service = await railway.getServiceInfo(inst.railway_service_id);
-    if (!service) {
-      console.log(`[reconcile] ${inst.id} (${inst.status}) — Railway service gone, removing from DB`);
-      await db.deleteInstance(inst.id);
-      cleaned++;
-    }
+  if (allServices === null) {
+    console.warn(`[tick] listProjectServices failed, skipping tick`);
+    return;
   }
 
-  if (cleaned > 0) {
-    console.log(`[reconcile] Cleaned ${cleaned} orphaned instance(s)`);
-  }
-  return cleaned;
-}
-
-// Ensure pool has enough idle instances. Create new ones if needed.
-export async function replenish() {
-  const counts = await db.countByStatus();
-  const total = counts.provisioning + counts.idle + counts.claimed;
-  const deficit = MIN_IDLE - (counts.idle + counts.provisioning);
-
-  console.log(
-    `[pool] Status: ${counts.idle} idle, ${counts.provisioning} provisioning, ${counts.claimed} claimed (total: ${total}, min_idle: ${MIN_IDLE}, max: ${MAX_TOTAL})`
+  // Filter to agent services in our environment
+  const agentServices = allServices.filter(
+    (s) =>
+      s.name.startsWith("convos-agent-") &&
+      s.name !== "convos-agent-pool-manager" &&
+      s.environmentIds.includes(myEnvId)
   );
 
-  if (deficit <= 0) {
-    console.log(`[pool] Pool is healthy, no action needed`);
-    return;
-  }
+  // Load metadata rows for enrichment
+  const metadataRows = await db.listAll();
+  const metadataByServiceId = new Map(metadataRows.map((r) => [r.railway_service_id, r]));
 
-  const canCreate = Math.min(deficit, MAX_TOTAL - total);
-  if (canCreate <= 0) {
-    console.log(`[pool] At max capacity (${total}/${MAX_TOTAL}), cannot create more`);
-    return;
-  }
+  // Health-check all SUCCESS services in parallel
+  const successServices = agentServices.filter((s) => s.deployStatus === "SUCCESS");
 
-  console.log(`[pool] Creating ${canCreate} new instance(s)...`);
-  const results = [];
-  for (let i = 0; i < canCreate; i++) {
-    try {
-      const inst = await createInstance();
-      results.push(inst);
-    } catch (err) {
-      console.error(`[pool] Failed to create instance:`, err);
+  // Get URLs for services (we need domains to health-check)
+  // For services already in cache, reuse their URL
+  const urlMap = new Map();
+  for (const svc of successServices) {
+    const cached = cache.get(svc.id);
+    if (cached?.url) {
+      urlMap.set(svc.id, cached.url);
     }
   }
-  return results;
+
+  // For services not in cache, fetch domains in parallel
+  const needUrls = successServices.filter((s) => !urlMap.has(s.id));
+  if (needUrls.length > 0) {
+    const urlResults = await Promise.allSettled(
+      needUrls.map(async (svc) => {
+        const url = await getServiceUrl(svc.id);
+        return { id: svc.id, url };
+      })
+    );
+    for (const r of urlResults) {
+      if (r.status === "fulfilled" && r.value.url) {
+        urlMap.set(r.value.id, r.value.url);
+      }
+    }
+  }
+
+  // Health-check SUCCESS services in parallel
+  const healthResults = new Map();
+  const toCheck = successServices.filter(
+    (s) => urlMap.has(s.id) && !cache.isBeingClaimed(s.id)
+  );
+
+  const checks = await Promise.allSettled(
+    toCheck.map(async (svc) => {
+      const result = await healthCheck(urlMap.get(svc.id));
+      return { id: svc.id, result };
+    })
+  );
+  for (const c of checks) {
+    if (c.status === "fulfilled") {
+      healthResults.set(c.value.id, c.value.result);
+    }
+  }
+
+  // Rebuild cache and take action on dead/sleeping services
+  const toDelete = [];
+
+  for (const svc of agentServices) {
+    // Skip services being claimed right now
+    if (cache.isBeingClaimed(svc.id)) continue;
+
+    const hc = healthResults.get(svc.id) || null;
+    const status = deriveStatus({
+      deployStatus: svc.deployStatus,
+      healthCheck: hc,
+      createdAt: svc.createdAt,
+    });
+
+    const metadata = metadataByServiceId.get(svc.id);
+    const url = urlMap.get(svc.id) || cache.get(svc.id)?.url || null;
+
+    if (status === "dead" || status === "sleeping") {
+      if (metadata) {
+        // Was claimed — mark as crashed in cache for dashboard
+        cache.set(svc.id, {
+          serviceId: svc.id,
+          id: metadata.id,
+          name: svc.name,
+          url,
+          status: "crashed",
+          createdAt: svc.createdAt,
+          deployStatus: svc.deployStatus,
+          agentName: metadata.agent_name,
+          instructions: metadata.instructions,
+          inviteUrl: metadata.invite_url,
+          conversationId: metadata.conversation_id,
+          claimedAt: metadata.claimed_at,
+        });
+      } else {
+        // Was idle/provisioning — delete silently
+        cache.remove(svc.id);
+        toDelete.push(svc);
+      }
+      continue;
+    }
+
+    // Build cache entry
+    const entry = {
+      serviceId: svc.id,
+      id: metadata?.id || svc.name.replace("convos-agent-", ""),
+      name: svc.name,
+      url,
+      status,
+      createdAt: svc.createdAt,
+      deployStatus: svc.deployStatus,
+    };
+
+    // Enrich with health-check data
+    if (hc) {
+      entry.inviteUrl = hc.inviteUrl || metadata?.invite_url || null;
+      entry.conversationId = hc.conversationId || hc.conversation || metadata?.conversation_id || null;
+    }
+
+    // Enrich with metadata
+    if (metadata) {
+      entry.agentName = metadata.agent_name;
+      entry.instructions = metadata.instructions;
+      entry.inviteUrl = entry.inviteUrl || metadata.invite_url;
+      entry.conversationId = entry.conversationId || metadata.conversation_id;
+      entry.claimedAt = metadata.claimed_at;
+    }
+
+    cache.set(svc.id, entry);
+  }
+
+  // Remove cache entries for services no longer in Railway
+  const railwayServiceIds = new Set(agentServices.map((s) => s.id));
+  for (const inst of cache.getAll()) {
+    if (!railwayServiceIds.has(inst.serviceId) && !cache.isBeingClaimed(inst.serviceId)) {
+      cache.remove(inst.serviceId);
+    }
+  }
+
+  // Delete dead services from Railway
+  for (const svc of toDelete) {
+    try {
+      await railway.deleteService(svc.id);
+      console.log(`[tick] Deleted dead service ${svc.id} (${svc.name})`);
+    } catch (err) {
+      console.warn(`[tick] Failed to delete ${svc.id}: ${err.message}`);
+    }
+  }
+
+  // Replenish
+  const counts = cache.getCounts();
+  const total = counts.starting + counts.idle + counts.claimed;
+  const deficit = MIN_IDLE - (counts.idle + counts.starting);
+
+  console.log(
+    `[tick] ${counts.idle} idle, ${counts.starting} starting, ${counts.claimed} claimed, ${counts.crashed || 0} crashed (total: ${total})`
+  );
+
+  if (deficit > 0) {
+    const canCreate = Math.min(deficit, MAX_TOTAL - total);
+    if (canCreate > 0) {
+      console.log(`[tick] Creating ${canCreate} new instance(s)...`);
+      for (let i = 0; i < canCreate; i++) {
+        try {
+          await createInstance();
+        } catch (err) {
+          console.error(`[tick] Failed to create instance:`, err);
+        }
+      }
+    }
+  }
 }
 
-// Launch an agent — provision an idle instance with instructions.
-// If joinUrl is provided, join an existing conversation instead of creating one.
-// Returns { inviteUrl, qrDataUrl, conversationId, joined } or null if no idle instances.
-export async function provision(agentId, instructions, joinUrl) {
-  // 1. Atomically claim an idle instance
-  const instance = await db.claimOne(agentId);
+// Claim an idle instance and provision it.
+export async function provision(agentName, instructions, joinUrl) {
+  const instance = cache.findClaimable();
   if (!instance) return null;
 
-  console.log(`[pool] Launching ${instance.id} for agentId="${agentId}"${joinUrl ? " (join mode)" : ""}`);
-
-  // 2. Call /pool/provision on the instance
-  const provisionBody = { instructions, name: agentId };
-  if (joinUrl) provisionBody.joinUrl = joinUrl;
-
-  console.log(`[pool] POST ${instance.railway_url}/pool/provision name="${provisionBody.name}"${joinUrl ? ` joinUrl="${joinUrl.slice(0, 40)}..."` : ""}`);
-  const res = await fetch(`${instance.railway_url}/pool/provision`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${POOL_API_KEY}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(provisionBody),
-  });
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Provision failed on ${instance.id}: ${res.status} ${text}`);
-  }
-
-  const result = await res.json();
-
-  // 3. Store the invite URL, conversation ID, and instructions
-  await db.setClaimed(instance.id, {
-    inviteUrl: result.inviteUrl || joinUrl || null,
-    conversationId: result.conversationId,
-    instructions,
-    joinUrl: joinUrl || null,
-  });
-
-  // 4. Rename the Railway service so it's identifiable in the dashboard
+  cache.startClaim(instance.serviceId);
   try {
-    await railway.renameService(instance.railway_service_id, `convos-agent-${agentId}`);
-    console.log(`[pool] Renamed ${instance.id} → convos-agent-${agentId}`);
-  } catch (err) {
-    console.warn(`[pool] Failed to rename ${instance.id}:`, err.message);
+    console.log(`[pool] Claiming ${instance.id} for "${agentName}"${joinUrl ? " (join)" : ""}`);
+
+    const headers = {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${POOL_API_KEY}`,
+    };
+
+    let result;
+    if (joinUrl) {
+      const res = await fetch(`${instance.url}/convos/join`, {
+        method: "POST",
+        headers,
+        signal: AbortSignal.timeout(30_000),
+        body: JSON.stringify({
+          inviteUrl: joinUrl,
+          profileName: agentName,
+          env: process.env.INSTANCE_XMTP_ENV || "dev",
+          instructions,
+        }),
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`Join failed on ${instance.id}: ${res.status} ${text}`);
+      }
+      result = await res.json();
+      result.joined = true;
+    } else {
+      const res = await fetch(`${instance.url}/convos/conversation`, {
+        method: "POST",
+        headers,
+        signal: AbortSignal.timeout(30_000),
+        body: JSON.stringify({
+          name: agentName,
+          profileName: agentName,
+          env: process.env.INSTANCE_XMTP_ENV || "dev",
+          instructions,
+        }),
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`Create failed on ${instance.id}: ${res.status} ${text}`);
+      }
+      result = await res.json();
+      result.joined = false;
+    }
+
+    if (result.conversationId == null) {
+      throw new Error(`API returned unexpected format: missing conversationId`);
+    }
+
+    // Insert metadata row
+    await db.insertMetadata({
+      id: instance.id,
+      railwayServiceId: instance.serviceId,
+      agentName,
+      conversationId: result.conversationId,
+      inviteUrl: result.inviteUrl || joinUrl || null,
+      instructions,
+    });
+
+    // Update cache
+    cache.set(instance.serviceId, {
+      ...instance,
+      status: "claimed",
+      agentName,
+      conversationId: result.conversationId,
+      inviteUrl: result.inviteUrl || joinUrl || null,
+      instructions,
+      claimedAt: new Date().toISOString(),
+    });
+
+    // Rename Railway service for dashboard visibility
+    try {
+      await railway.renameService(instance.serviceId, `convos-agent-${agentName}`);
+    } catch (err) {
+      console.warn(`[pool] Failed to rename ${instance.id}:`, err.message);
+    }
+
+    console.log(`[pool] Provisioned ${instance.id}: ${result.joined ? "joined" : "created"} conversation ${result.conversationId}`);
+
+    return {
+      inviteUrl: result.inviteUrl || null,
+      conversationId: result.conversationId,
+      instanceId: instance.id,
+      joined: result.joined,
+    };
+  } finally {
+    cache.endClaim(instance.serviceId);
   }
-
-  console.log(`[pool] Provisioned ${instance.id}: ${result.joined ? "joined" : "created"} conversation ${result.conversationId}`);
-
-  // 5. Trigger backfill (don't await — fire and forget)
-  replenish().catch((err) => console.error("[pool] Backfill error:", err));
-
-  return {
-    inviteUrl: result.inviteUrl || null,
-    qrDataUrl: result.qrDataUrl || null,
-    conversationId: result.conversationId,
-    instanceId: instance.id,
-    joined: !!result.joined,
-  };
 }
 
-// Drain idle instances from the pool — delete from Railway and remove from DB.
+// Drain idle instances.
 export async function drainPool(count) {
-  const idle = await db.listIdle(count);
+  const idle = cache.getByStatus("idle").slice(0, count);
   console.log(`[pool] Draining ${idle.length} idle instance(s)...`);
   const results = [];
   for (const inst of idle) {
     try {
-      await railway.deleteService(inst.railway_service_id);
-      await db.deleteInstance(inst.id);
+      await railway.deleteService(inst.serviceId);
+      cache.remove(inst.serviceId);
       results.push(inst.id);
       console.log(`[pool]   Drained ${inst.id}`);
     } catch (err) {
@@ -234,36 +376,37 @@ export async function drainPool(count) {
   return results;
 }
 
-// Kill a launched instance — delete from Railway and remove from DB.
+// Kill a specific instance.
 export async function killInstance(id) {
-  const instances = await db.listAll();
-  const inst = instances.find((i) => i.id === id);
+  const inst = cache.getAll().find((i) => i.id === id);
   if (!inst) throw new Error(`Instance ${id} not found`);
 
-  console.log(`[pool] Killing instance ${inst.id} (${inst.claimed_by})`);
+  console.log(`[pool] Killing instance ${inst.id} (${inst.agentName || inst.name})`);
 
   try {
-    await railway.deleteService(inst.railway_service_id);
-    console.log(`[pool]   Railway service deleted`);
+    await railway.deleteService(inst.serviceId);
   } catch (err) {
-    console.warn(`[pool]   Failed to delete Railway service:`, err.message);
+    console.warn(`[pool] Failed to delete Railway service:`, err.message);
   }
 
-  await db.deleteInstance(id);
-  console.log(`[pool]   Removed from DB`);
-
-  // Trigger backfill
-  replenish().catch((err) => console.error("[pool] Backfill error:", err));
+  cache.remove(inst.serviceId);
+  await db.deleteByServiceId(inst.serviceId).catch(() => {});
 }
 
-// Run a single reconcile + poll + replenish cycle.
-export async function tick() {
-  // Reconcile periodically (every RECONCILE_INTERVAL_MS, not every tick)
-  const now = Date.now();
-  if (now - _lastReconcile > RECONCILE_INTERVAL_MS) {
-    await reconcile();
-    _lastReconcile = now;
+// Dismiss a crashed agent (user-initiated from dashboard).
+export async function dismissCrashed(id) {
+  const inst = cache.getAll().find((i) => i.id === id && i.status === "crashed");
+  if (!inst) throw new Error(`Crashed instance ${id} not found`);
+
+  console.log(`[pool] Dismissing crashed ${inst.id} (${inst.agentName || inst.name})`);
+
+  try {
+    await railway.deleteService(inst.serviceId);
+  } catch (err) {
+    // Service might already be gone
+    console.warn(`[pool] Failed to delete Railway service:`, err.message);
   }
-  await pollProvisioning();
-  await replenish();
+
+  cache.remove(inst.serviceId);
+  await db.deleteByServiceId(inst.serviceId).catch(() => {});
 }

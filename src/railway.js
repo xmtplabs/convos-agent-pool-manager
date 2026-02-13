@@ -8,7 +8,7 @@ async function gql(query, variables = {}) {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "Project-Access-Token": token,
+      Authorization: `Bearer ${token}`,
     },
     body: JSON.stringify({ query, variables }),
   });
@@ -47,6 +47,19 @@ export async function createService(name, variables = {}) {
 
   const serviceId = data.serviceCreate.id;
 
+  // Set rootDirectory for monorepo support (must be done via serviceInstanceUpdate,
+  // not supported in ServiceCreateInput).
+  const rootDir = process.env.RAILWAY_SOURCE_ROOT_DIR;
+  if (rootDir) {
+    try {
+      await updateServiceInstance(serviceId, { rootDirectory: rootDir });
+      console.log(`[railway]   Set rootDirectory: ${rootDir}`);
+    } catch (err) {
+      console.warn(`[railway] Failed to set rootDirectory for ${serviceId}:`, err);
+    }
+  }
+
+
   // serviceCreate always deploys from the repo's default branch (main)
   // regardless of the branch field. To build from the correct branch:
   // 1. Cancel the initial main deployment that serviceCreate auto-triggered
@@ -55,7 +68,11 @@ export async function createService(name, variables = {}) {
   //
   // Variables are passed inline to serviceCreate above so that
   // setVariables doesn't trigger another main deployment.
-  if (branch) {
+  //
+  // We also cancel-and-redeploy when rootDir is set (even without branch),
+  // because serviceCreate triggers deployment before updateServiceInstance
+  // sets rootDirectory.
+  if (branch || rootDir) {
     // Cancel the initial main deployment.
     try {
       const depData = await gql(
@@ -78,9 +95,10 @@ export async function createService(name, variables = {}) {
       console.warn(`[railway] Failed to cancel initial deployment for ${serviceId}:`, err);
     }
 
-    // Deploy the latest commit from the correct branch.
+    // Deploy the latest commit from the correct branch (or default branch).
+    const deployRef = branch || "HEAD";
     try {
-      const ghRes = await fetch(`https://api.github.com/repos/${repo}/commits/${branch}`, {
+      const ghRes = await fetch(`https://api.github.com/repos/${repo}/commits/${deployRef}`, {
         headers: { Accept: "application/vnd.github.v3+json" },
         signal: AbortSignal.timeout(10000),
       });
@@ -93,9 +111,21 @@ export async function createService(name, variables = {}) {
         }`,
         { serviceId, environmentId, commitSha: sha }
       );
-      console.log(`[railway] Deployed ${repo}@${branch} (${sha.slice(0, 8)}) to ${serviceId}`);
+      console.log(`[railway] Deployed ${repo}@${deployRef} (${sha.slice(0, 8)}) to ${serviceId}`);
     } catch (err) {
       console.warn(`[railway] Failed to deploy correct branch for ${serviceId}:`, err);
+    }
+
+    // Disconnect the repo so pushes don't auto-redeploy all agent instances.
+    // The correct commit is already deployed above; no further repo link needed.
+    try {
+      await gql(
+        `mutation($id: String!) { serviceDisconnect(id: $id) { id } }`,
+        { id: serviceId }
+      );
+      console.log(`[railway]   Disconnected repo (auto-deploys disabled)`);
+    } catch (err) {
+      console.warn(`[railway] Failed to disconnect repo for ${serviceId}:`, err);
     }
   }
 
@@ -145,6 +175,17 @@ export async function renameService(serviceId, name) {
   );
 }
 
+export async function updateServiceInstance(serviceId, settings = {}) {
+  const environmentId = process.env.RAILWAY_ENVIRONMENT_ID;
+
+  await gql(
+    `mutation($serviceId: String!, $environmentId: String!, $input: ServiceInstanceUpdateInput!) {
+      serviceInstanceUpdate(serviceId: $serviceId, environmentId: $environmentId, input: $input)
+    }`,
+    { serviceId, environmentId, input: settings }
+  );
+}
+
 export async function deleteService(serviceId) {
   await gql(
     `mutation($id: String!) {
@@ -152,6 +193,66 @@ export async function deleteService(serviceId) {
     }`,
     { id: serviceId }
   );
+}
+
+// List all services in the project with environment info and deploy status.
+// Returns [{ id, name, createdAt, environmentIds, deployStatus }] or null on API error.
+export async function listProjectServices() {
+  const projectId = process.env.RAILWAY_PROJECT_ID;
+  try {
+    const data = await gql(
+      `query($id: String!) {
+        project(id: $id) {
+          services(first: 500) {
+            edges {
+              node {
+                id
+                name
+                createdAt
+                serviceInstances { edges { node { environmentId } } }
+                deployments(first: 1) {
+                  edges { node { id status } }
+                }
+              }
+            }
+          }
+        }
+      }`,
+      { id: projectId }
+    );
+    const edges = data.project?.services?.edges;
+    if (!edges) return null;
+    return edges.map((e) => ({
+      id: e.node.id,
+      name: e.node.name,
+      createdAt: e.node.createdAt,
+      environmentIds: (e.node.serviceInstances?.edges || []).map((si) => si.node.environmentId),
+      deployStatus: e.node.deployments?.edges?.[0]?.node?.status || null,
+    }));
+  } catch (err) {
+    console.warn(`[railway] listProjectServices failed: ${err.message}`);
+    return null;
+  }
+}
+
+// Get the public domain for a service. Returns domain string or null.
+export async function getServiceDomain(serviceId) {
+  const environmentId = process.env.RAILWAY_ENVIRONMENT_ID;
+  try {
+    const data = await gql(
+      `query($serviceId: String!, $environmentId: String!) {
+        serviceDomains(serviceId: $serviceId, environmentId: $environmentId) {
+          serviceDomains { domain }
+          customDomains { domain }
+        }
+      }`,
+      { serviceId, environmentId }
+    );
+    const sd = data.serviceDomains;
+    return sd?.customDomains?.[0]?.domain || sd?.serviceDomains?.[0]?.domain || null;
+  } catch {
+    return null;
+  }
 }
 
 // Check if a service still exists on Railway. Returns { id, name } or null.
