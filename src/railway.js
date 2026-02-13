@@ -237,20 +237,22 @@ export async function listProjectServices() {
 
 // Get the public domain for a service. Returns domain string or null.
 export async function getServiceDomain(serviceId) {
+  const projectId = process.env.RAILWAY_PROJECT_ID;
   const environmentId = process.env.RAILWAY_ENVIRONMENT_ID;
   try {
     const data = await gql(
-      `query($serviceId: String!, $environmentId: String!) {
-        serviceDomains(serviceId: $serviceId, environmentId: $environmentId) {
+      `query($serviceId: String!, $environmentId: String!, $projectId: String!) {
+        domains(serviceId: $serviceId, environmentId: $environmentId, projectId: $projectId) {
           serviceDomains { domain }
           customDomains { domain }
         }
       }`,
-      { serviceId, environmentId }
+      { serviceId, environmentId, projectId }
     );
-    const sd = data.serviceDomains;
+    const sd = data.domains;
     return sd?.customDomains?.[0]?.domain || sd?.serviceDomains?.[0]?.domain || null;
-  } catch {
+  } catch (err) {
+    console.warn(`[railway] getServiceDomain(${serviceId}) failed: ${err.message}`);
     return null;
   }
 }
