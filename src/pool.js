@@ -76,6 +76,11 @@ export async function createInstance() {
 // Unified tick: rebuild cache from Railway, health-check, replenish.
 export async function tick() {
   const myEnvId = process.env.RAILWAY_ENVIRONMENT_ID;
+  if (!myEnvId) {
+    console.warn(`[tick] RAILWAY_ENVIRONMENT_ID not set, skipping tick`);
+    return;
+  }
+
   const allServices = await railway.listProjectServices();
 
   if (allServices === null) {
