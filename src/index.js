@@ -1,6 +1,6 @@
 import express from "express";
 import * as pool from "./pool.js";
-import * as db from "./db/pool.js";
+import * as cache from "./cache.js";
 
 const PORT = parseInt(process.env.PORT || "3001", 10);
 const POOL_API_KEY = process.env.POOL_API_KEY;
@@ -25,37 +25,19 @@ function requireAuth(req, res, next) {
 app.get("/healthz", (_req, res) => res.json({ ok: true }));
 
 // Version — check this to verify what code is deployed.
-const BUILD_VERSION = "2026-02-08T23:pool-v2";
+const BUILD_VERSION = "2026-02-12T01:cache-v1";
 app.get("/version", (_req, res) => res.json({ version: BUILD_VERSION, environment: POOL_ENVIRONMENT }));
 
 // Pool counts (no auth — used by the launch form)
-app.get("/api/pool/counts", async (_req, res) => {
-  try {
-    const counts = await db.countByStatus();
-    res.json(counts);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+app.get("/api/pool/counts", (_req, res) => {
+  res.json(cache.getCounts());
 });
 
 // List launched agents (no auth — used by the page)
-app.get("/api/pool/agents", async (_req, res) => {
-  try {
-    const agents = await db.listClaimed();
-    res.json(agents);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Kill all launched instances (returns list of IDs so frontend can track)
-app.delete("/api/pool/instances", requireAuth, async (_req, res) => {
-  try {
-    const agents = await db.listClaimed();
-    res.json({ ids: agents.map((a) => a.id) });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+app.get("/api/pool/agents", (_req, res) => {
+  const claimed = cache.getByStatus("claimed");
+  const crashed = cache.getByStatus("crashed");
+  res.json({ claimed, crashed });
 });
 
 // Kill a launched instance
@@ -65,6 +47,17 @@ app.delete("/api/pool/instances/:id", requireAuth, async (req, res) => {
     res.json({ ok: true });
   } catch (err) {
     console.error("[api] Kill failed:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Dismiss a crashed agent
+app.delete("/api/pool/crashed/:id", requireAuth, async (req, res) => {
+  try {
+    await pool.dismissCrashed(req.params.id);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("[api] Dismiss failed:", err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -173,6 +166,7 @@ app.get("/", (_req, res) => {
     .pool-stat.ready .dot { background: #34C759; }
     .pool-stat.starting .dot { background: #FF9500; }
     .pool-stat.claimed .dot { background: #007AFF; }
+    .pool-stat.crashed .dot { background: #DC2626; }
 
     .pool-bar-right {
       display: flex;
@@ -393,6 +387,20 @@ app.get("/", (_req, res) => {
 
     .btn-danger:hover { background: #FECACA; }
 
+    .btn-warn {
+      background: #FEF3C7;
+      color: #92400E;
+      border: none;
+      border-radius: 12px;
+      padding: 10px 16px;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+
+    .btn-warn:hover { background: #FDE68A; }
+
     .error-message {
       color: #DC2626;
       font-size: 14px;
@@ -438,6 +446,11 @@ app.get("/", (_req, res) => {
       margin-bottom: 10px;
     }
 
+    .agent-card.crashed {
+      border-color: #FECACA;
+      background: #FEF2F2;
+    }
+
     .agent-header {
       display: flex;
       align-items: center;
@@ -457,6 +470,17 @@ app.get("/", (_req, res) => {
       font-weight: 500;
     }
 
+    .agent-status-badge {
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      padding: 2px 6px;
+      border-radius: 4px;
+      background: #FEE2E2;
+      color: #DC2626;
+    }
+
     .agent-instructions {
       font-size: 13px;
       color: #666;
@@ -474,7 +498,8 @@ app.get("/", (_req, res) => {
     }
 
     .agent-actions .btn-secondary,
-    .agent-actions .btn-danger {
+    .agent-actions .btn-danger,
+    .agent-actions .btn-warn {
       padding: 6px 12px;
       font-size: 12px;
       border-radius: 8px;
@@ -635,8 +660,9 @@ app.get("/", (_req, res) => {
       <div class="pool-bar-left">
         <span class="pool-bar-label">Pool</span>
         <div class="pool-stat ready"><span class="dot"></span><span id="s-idle">-</span> ready</div>
-        <div class="pool-stat starting"><span class="dot"></span><span id="s-prov">-</span> starting</div>
-        <div class="pool-stat claimed"><span class="dot"></span><span id="s-alloc">-</span> claimed</div>
+        <div class="pool-stat starting"><span class="dot"></span><span id="s-starting">-</span> starting</div>
+        <div class="pool-stat claimed"><span class="dot"></span><span id="s-claimed">-</span> claimed</div>
+        <div class="pool-stat crashed" id="s-crashed-wrap" style="display:none"><span class="dot"></span><span id="s-crashed">0</span> crashed</div>
       </div>
       <div class="pool-bar-right">
         <input id="replenish-count" type="number" min="1" max="20" value="3" />
@@ -721,6 +747,7 @@ app.get("/", (_req, res) => {
     }
 
     function timeAgo(dateStr){
+      if(!dateStr)return '';
       var ms=Date.now()-new Date(dateStr).getTime();
       var s=Math.floor(ms/1000),m=Math.floor(s/60),h=Math.floor(m/60),d=Math.floor(h/24);
       if(d>0)return d+'d '+h%24+'h';
@@ -730,16 +757,19 @@ app.get("/", (_req, res) => {
     }
 
     // Pool status
-    const sIdle=document.getElementById('s-idle'),sProv=document.getElementById('s-prov'),sAlloc=document.getElementById('s-alloc');
-    const unavail=document.getElementById('unavailable'),btn=document.getElementById('btn');
-    const liveCount=document.getElementById('live-count');
-    let launching=false;
+    var sIdle=document.getElementById('s-idle'),sStarting=document.getElementById('s-starting'),sClaimed=document.getElementById('s-claimed');
+    var sCrashed=document.getElementById('s-crashed'),sCrashedWrap=document.getElementById('s-crashed-wrap');
+    var unavail=document.getElementById('unavailable'),btn=document.getElementById('btn');
+    var liveCount=document.getElementById('live-count');
+    var launching=false;
 
     async function refreshStatus(){
       try{
         var res=await fetch('/api/pool/counts');
         var c=await res.json();
-        sIdle.textContent=c.idle;sProv.textContent=c.provisioning;sAlloc.textContent=c.claimed;
+        sIdle.textContent=c.idle;sStarting.textContent=c.starting;sClaimed.textContent=c.claimed;
+        if(c.crashed>0){sCrashed.textContent=c.crashed;sCrashedWrap.style.display='';}
+        else{sCrashedWrap.style.display='none';}
         if(!launching){
           if(c.idle>0){btn.disabled=false;unavail.style.display='none'}
           else{btn.disabled=true;unavail.style.display='block'}
@@ -748,30 +778,53 @@ app.get("/", (_req, res) => {
     }
 
     // Agent feed
-    const feed=document.getElementById('feed');
-    var agentsCache=[];
+    var feed=document.getElementById('feed');
+    var claimedCache=[],crashedCache=[];
 
     async function refreshFeed(){
       try{
         var res=await fetch('/api/pool/agents');
-        agentsCache=await res.json();
+        var data=await res.json();
+        claimedCache=data.claimed||[];
+        crashedCache=data.crashed||[];
         renderFeed();
       }catch{}
     }
 
+    function esc(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;');}
+
     function renderFeed(){
-      liveCount.textContent=agentsCache.length?agentsCache.length+' running':'';
-      if(!agentsCache.length){
+      var total=claimedCache.length+crashedCache.length;
+      liveCount.textContent=claimedCache.length?claimedCache.length+' running':'';
+      if(!total){
         feed.innerHTML='<div class="empty-state">No live agents yet.</div>';
         return;
       }
-      feed.innerHTML=agentsCache.map(function(a){
-        var name=(a.claimed_by||a.id).replace(/&/g,'&amp;').replace(/</g,'&lt;');
-        var instr=(a.instructions||'No instructions').replace(/&/g,'&amp;').replace(/</g,'&lt;');
-        return '<div class="agent-card" id="agent-'+a.id+'">'+
+      var html='';
+      // Crashed agents first
+      crashedCache.forEach(function(a){
+        var name=esc(a.agentName||a.id);
+        var instr=esc(a.instructions||'No instructions');
+        html+='<div class="agent-card crashed" id="agent-'+a.id+'">'+
+          '<div class="agent-header">'+
+            '<span class="agent-name">'+name+' <span class="agent-status-badge">Crashed</span></span>'+
+            '<span class="agent-uptime">'+timeAgo(a.claimedAt)+'</span>'+
+          '</div>'+
+          '<div class="agent-instructions">'+instr+'</div>'+
+          '<div class="agent-actions">'+
+            '<button class="btn-secondary" data-qr="'+a.id+'">Show QR</button>'+
+            '<button class="btn-warn" data-dismiss="'+a.id+'">Dismiss</button>'+
+          '</div>'+
+        '</div>';
+      });
+      // Live agents
+      claimedCache.forEach(function(a){
+        var name=esc(a.agentName||a.id);
+        var instr=esc(a.instructions||'No instructions');
+        html+='<div class="agent-card" id="agent-'+a.id+'">'+
           '<div class="agent-header">'+
             '<span class="agent-name">'+name+'</span>'+
-            '<span class="agent-uptime">'+timeAgo(a.claimed_at)+'</span>'+
+            '<span class="agent-uptime">'+timeAgo(a.claimedAt)+'</span>'+
           '</div>'+
           '<div class="agent-instructions">'+instr+'</div>'+
           '<div class="agent-actions">'+
@@ -779,21 +832,28 @@ app.get("/", (_req, res) => {
             '<button class="btn-danger" data-kill="'+a.id+'">Kill</button>'+
           '</div>'+
         '</div>';
-      }).join('');
+      });
+      feed.innerHTML=html;
     }
 
     // Event delegation for agent actions
     feed.onclick=function(e){
       var qrId=e.target.getAttribute('data-qr');
       if(qrId){
-        var a=agentsCache.find(function(x){return x.id===qrId;});
-        if(a)showQr(a.claimed_by||a.id,a.invite_url||'');
+        var a=claimedCache.concat(crashedCache).find(function(x){return x.id===qrId;});
+        if(a)showQr(a.agentName||a.id,a.inviteUrl||'');
         return;
       }
       var killId=e.target.getAttribute('data-kill');
       if(killId){
-        var a2=agentsCache.find(function(x){return x.id===killId;});
-        if(a2)killAgent(a2.id,a2.claimed_by||a2.id);
+        var a2=claimedCache.find(function(x){return x.id===killId;});
+        if(a2)killAgent(a2.id,a2.agentName||a2.id);
+        return;
+      }
+      var dismissId=e.target.getAttribute('data-dismiss');
+      if(dismissId){
+        var a3=crashedCache.find(function(x){return x.id===dismissId;});
+        if(a3)dismissAgent(a3.id,a3.agentName||a3.id);
       }
     };
 
@@ -801,7 +861,6 @@ app.get("/", (_req, res) => {
     var modal=document.getElementById('qr-modal');
     function showQr(name,url){
       document.getElementById('modal-title').textContent=name;
-      // Generate QR via a free API
       document.getElementById('modal-qr').src='https://api.qrserver.com/v1/create-qr-code/?size=256x256&data='+encodeURIComponent(url);
       document.getElementById('modal-invite').textContent=url;
       modal.classList.add('active');
@@ -843,6 +902,26 @@ app.get("/", (_req, res) => {
       }
     }
 
+    // Dismiss crashed agent
+    async function dismissAgent(id,name){
+      var confirmMsg=(POOL_ENV==='production'?'[PRODUCTION] ':'')+
+        'Dismiss crashed agent "'+name+'"? This will clean up the Railway service.';
+      if(!confirm(confirmMsg))return;
+      markDestroying(id);
+      try{
+        var res=await fetch('/api/pool/crashed/'+id,{method:'DELETE',headers:authHeaders});
+        var data=await res.json();
+        if(!res.ok)throw new Error(data.error||'Dismiss failed');
+        var card=document.getElementById('agent-'+id);
+        if(card)card.remove();
+        refreshStatus();refreshFeed();
+      }catch(err){
+        alert('Failed to dismiss: '+err.message);
+        var card=document.getElementById('agent-'+id);
+        if(card)card.classList.remove('destroying');
+      }
+    }
+
     // Mode toggle
     var modeCreate=document.getElementById('mode-create');
     var modeJoin=document.getElementById('mode-join');
@@ -871,7 +950,7 @@ app.get("/", (_req, res) => {
     f.onsubmit=async function(e){
       e.preventDefault();
       var agentName=f.name.value.trim();
-      var payload={agentId:agentName,instructions:f.instructions.value.trim()};
+      var payload={agentName:agentName,instructions:f.instructions.value.trim()};
       if(isJoinMode){
         var jUrl=joinUrlInput.value.trim();
         if(!jUrl){errorEl.textContent='Conversation link is required';errorEl.style.display='block';return;}
@@ -954,24 +1033,20 @@ app.get("/", (_req, res) => {
 });
 
 // Pool status overview
-app.get("/api/pool/status", requireAuth, async (_req, res) => {
-  try {
-    const counts = await db.countByStatus();
-    const instances = await db.listAll();
-    res.json({ counts, instances });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+app.get("/api/pool/status", requireAuth, (_req, res) => {
+  const counts = cache.getCounts();
+  const instances = cache.getAll();
+  res.json({ counts, instances });
 });
 
 // Launch an agent — claim an idle instance and provision it with instructions.
 app.post("/api/pool/claim", requireAuth, async (req, res) => {
-  const { agentId, instructions, joinUrl } = req.body || {};
+  const { agentName, instructions, joinUrl } = req.body || {};
   if (!instructions || typeof instructions !== "string") {
     return res.status(400).json({ error: "instructions (string) is required" });
   }
-  if (!agentId || typeof agentId !== "string") {
-    return res.status(400).json({ error: "agentId (string) is required" });
+  if (!agentName || typeof agentName !== "string") {
+    return res.status(400).json({ error: "agentName (string) is required" });
   }
   if (joinUrl && typeof joinUrl !== "string") {
     return res.status(400).json({ error: "joinUrl must be a string if provided" });
@@ -984,7 +1059,7 @@ app.post("/api/pool/claim", requireAuth, async (req, res) => {
   }
 
   try {
-    const result = await pool.provision(agentId, instructions, joinUrl || undefined);
+    const result = await pool.provision(agentName, instructions, joinUrl || undefined);
     if (!result) {
       return res.status(503).json({
         error: "No idle instances available. Try again in a few minutes.",
@@ -993,21 +1068,6 @@ app.post("/api/pool/claim", requireAuth, async (req, res) => {
     res.json(result);
   } catch (err) {
     console.error("[api] Launch failed:", err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Redirect to the setup page of an idle instance
-app.get("/api/pool/setup", requireAuth, async (_req, res) => {
-  try {
-    const instance = await db.findIdle();
-    if (!instance) {
-      return res.status(503).json({
-        error: "No idle instances available. Try again in a few minutes.",
-      });
-    }
-    res.redirect(`${instance.railway_url}/setup`);
-  } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
@@ -1026,25 +1086,22 @@ app.post("/api/pool/replenish", requireAuth, async (req, res) => {
           console.error(`[pool] Failed to create instance:`, err);
         }
       }
-      const counts = await db.countByStatus();
-      return res.json({ ok: true, created: results.length, counts });
+      return res.json({ ok: true, created: results.length, counts: cache.getCounts() });
     }
     await pool.tick();
-    const counts = await db.countByStatus();
-    res.json({ ok: true, counts });
+    res.json({ ok: true, counts: cache.getCounts() });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Manually trigger reconciliation — verify DB against Railway and clean up orphans
+// Manually trigger a tick (replaces old reconcile endpoint)
 app.post("/api/pool/reconcile", requireAuth, async (_req, res) => {
   try {
-    const cleaned = await pool.reconcile();
-    const counts = await db.countByStatus();
-    res.json({ ok: true, cleaned, counts });
+    await pool.tick();
+    res.json({ ok: true, counts: cache.getCounts() });
   } catch (err) {
-    console.error("[api] Reconcile failed:", err);
+    console.error("[api] Tick failed:", err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -1054,8 +1111,7 @@ app.post("/api/pool/drain", requireAuth, async (req, res) => {
   try {
     const count = Math.min(parseInt(req.body?.count) || 1, 20);
     const drained = await pool.drainPool(count);
-    const counts = await db.countByStatus();
-    res.json({ ok: true, drained: drained.length, counts });
+    res.json({ ok: true, drained: drained.length, counts: cache.getCounts() });
   } catch (err) {
     console.error("[api] Drain failed:", err);
     res.status(500).json({ error: err.message });
@@ -1063,7 +1119,7 @@ app.post("/api/pool/drain", requireAuth, async (req, res) => {
 });
 
 // --- Background tick ---
-// Poll provisioning instances and replenish every 30 seconds.
+// Rebuild cache from Railway + health checks every 30 seconds.
 const TICK_INTERVAL = parseInt(process.env.TICK_INTERVAL_MS || "30000", 10);
 setInterval(() => {
   pool.tick().catch((err) => console.error("[tick] Error:", err));
