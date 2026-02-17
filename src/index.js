@@ -691,6 +691,7 @@ app.get("/", (_req, res) => {
           No instances ready. Waiting for pool to warm up...
         </div>
         <form id="f">
+          <!-- Join mode hidden for now
           <div class="mode-toggle">
             <button type="button" class="mode-btn active" id="mode-create">New Conversation</button>
             <button type="button" class="mode-btn" id="mode-join">Join Existing</button>
@@ -699,6 +700,7 @@ app.get("/", (_req, res) => {
             <label class="setting-label" for="join-url">Conversation Link</label>
             <input id="join-url" name="joinUrl" class="setting-input" placeholder="Paste a Convos invite link..." />
           </div>
+          -->
           <div class="setting-group">
             <label class="setting-label" for="name">Name</label>
             <input id="name" name="name" class="setting-input" placeholder="e.g. Tokyo Trip" required />
@@ -945,27 +947,8 @@ app.get("/", (_req, res) => {
       }
     }
 
-    // Mode toggle
-    var modeCreate=document.getElementById('mode-create');
-    var modeJoin=document.getElementById('mode-join');
-    var joinUrlGroup=document.getElementById('join-url-group');
-    var joinUrlInput=document.getElementById('join-url');
+    // Mode toggle (join mode hidden for now)
     var isJoinMode=false;
-
-    modeCreate.onclick=function(){
-      isJoinMode=false;
-      modeCreate.classList.add('active');modeJoin.classList.remove('active');
-      joinUrlGroup.style.display='none';
-      joinUrlInput.removeAttribute('required');
-      btn.textContent='Launch Agent';
-    };
-    modeJoin.onclick=function(){
-      isJoinMode=true;
-      modeJoin.classList.add('active');modeCreate.classList.remove('active');
-      joinUrlGroup.style.display='block';
-      joinUrlInput.setAttribute('required','required');
-      btn.textContent='Join & Launch';
-    };
 
     // Launch form
     var f=document.getElementById('f'),errorEl=document.getElementById('error');
@@ -979,18 +962,7 @@ app.get("/", (_req, res) => {
         channels:{email:document.getElementById('ch-email').checked,sms:document.getElementById('ch-sms').checked,crypto:document.getElementById('ch-crypto').checked},
         model:f.model.value||undefined
       };
-      if(isJoinMode){
-        var jUrl=joinUrlInput.value.trim();
-        if(!jUrl){errorEl.textContent='Conversation link is required';errorEl.style.display='block';return;}
-        if(POOL_ENV==='production'&&/dev\\.convos\\.org/i.test(jUrl)){
-          errorEl.textContent='That looks like a dev environment link. Use a popup.convos.org link for production.';errorEl.style.display='block';return;
-        }
-        if(POOL_ENV!=='production'&&/popup\\.convos\\.org/i.test(jUrl)){
-          errorEl.textContent='That looks like a production link. Use a dev.convos.org link for the dev environment.';errorEl.style.display='block';return;
-        }
-        payload.joinUrl=jUrl;
-      }
-      launching=true;btn.disabled=true;btn.textContent=isJoinMode?'Joining...':'Launching...';
+      launching=true;btn.disabled=true;btn.textContent='Launching...';
       errorEl.style.display='none';successEl.classList.remove('active');
       try{
         var res=await fetch('/api/pool/claim',{method:'POST',headers:authHeaders,
@@ -999,7 +971,6 @@ app.get("/", (_req, res) => {
         var data=await res.json();
         if(!res.ok)throw new Error(data.error||'Launch failed');
         f.reset();
-        if(isJoinMode){modeCreate.onclick();}
         if(data.joined){
           successTextEl.textContent=agentName+' joined the conversation';
           successEl.classList.add('active');
@@ -1011,7 +982,7 @@ app.get("/", (_req, res) => {
       }catch(err){
         errorEl.textContent=err.message;
         errorEl.style.display='block';
-      }finally{launching=false;btn.textContent=isJoinMode?'Join & Launch':'Launch Agent';refreshStatus();}
+      }finally{launching=false;btn.textContent='Launch Agent';refreshStatus();}
     };
 
     // Pool controls
