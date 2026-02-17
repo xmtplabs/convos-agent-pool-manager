@@ -3,16 +3,17 @@ const STUCK_TIMEOUT_MS = parseInt(process.env.POOL_STUCK_TIMEOUT_MS || String(15
 const STARTING_STATUSES = new Set(["QUEUED", "WAITING", "BUILDING", "DEPLOYING"]);
 const DEAD_STATUSES = new Set(["FAILED", "CRASHED", "REMOVED", "SKIPPED"]);
 
-// Derive pool status from Railway deploy status + health check result.
-// healthCheck is the parsed JSON from /convos/status, or null if unreachable.
-export function deriveStatus({ deployStatus, healthCheck = null, createdAt = null }) {
+// Derive pool status from Railway deploy status + health check + metadata.
+// healthCheck is the parsed JSON from /pool/health ({ ready: boolean }), or null if unreachable.
+// hasMetadata indicates whether the pool manager has provisioned this instance (claimed).
+export function deriveStatus({ deployStatus, healthCheck = null, createdAt = null, hasMetadata = false }) {
   if (deployStatus === "SLEEPING") return "sleeping";
   if (DEAD_STATUSES.has(deployStatus)) return "dead";
   if (STARTING_STATUSES.has(deployStatus)) return "starting";
 
   if (deployStatus === "SUCCESS") {
-    if (healthCheck) {
-      return healthCheck.conversation ? "claimed" : "idle";
+    if (healthCheck?.ready) {
+      return hasMetadata ? "claimed" : "idle";
     }
     // Unreachable — check age
     const age = createdAt ? Date.now() - new Date(createdAt).getTime() : Infinity;

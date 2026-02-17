@@ -43,12 +43,12 @@ describe("deriveStatus", () => {
     assert.equal(deriveStatus({ deployStatus: "SLEEPING", createdAt: young }), "sleeping");
   });
 
-  it("SUCCESS + healthy + no conversation → idle", () => {
-    assert.equal(deriveStatus({ deployStatus: "SUCCESS", healthCheck: { ready: true, conversation: null } }), "idle");
+  it("SUCCESS + healthy + no metadata → idle", () => {
+    assert.equal(deriveStatus({ deployStatus: "SUCCESS", healthCheck: { ready: true }, hasMetadata: false }), "idle");
   });
 
-  it("SUCCESS + healthy + has conversation → claimed", () => {
-    assert.equal(deriveStatus({ deployStatus: "SUCCESS", healthCheck: { ready: true, conversation: "conv-123" } }), "claimed");
+  it("SUCCESS + healthy + has metadata → claimed", () => {
+    assert.equal(deriveStatus({ deployStatus: "SUCCESS", healthCheck: { ready: true }, hasMetadata: true }), "claimed");
   });
 
   it("SUCCESS + unreachable + young → starting", () => {

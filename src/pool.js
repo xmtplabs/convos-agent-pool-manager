@@ -15,16 +15,15 @@ function instanceEnvVars() {
     ANTHROPIC_API_KEY: process.env.INSTANCE_ANTHROPIC_API_KEY || "",
     XMTP_ENV: process.env.INSTANCE_XMTP_ENV || "dev",
     GATEWAY_AUTH_TOKEN: POOL_API_KEY,
-    OPENCLAW_GIT_REF: process.env.OPENCLAW_GIT_REF || (IS_PRODUCTION ? "main" : "staging"),
     PORT: "8080",
   };
 }
 
-// Health-check a single instance via /convos/status.
+// Health-check a single instance via /pool/health.
 // Returns parsed JSON on success, null on failure.
 async function healthCheck(url) {
   try {
-    const res = await fetch(`${url}/convos/status`, {
+    const res = await fetch(`${url}/pool/health`, {
       headers: { Authorization: `Bearer ${POOL_API_KEY}` },
       signal: AbortSignal.timeout(5000),
     });
@@ -155,13 +154,13 @@ export async function tick() {
     if (cache.isBeingClaimed(svc.id)) continue;
 
     const hc = healthResults.get(svc.id) || null;
+    const metadata = metadataByServiceId.get(svc.id);
     const status = deriveStatus({
       deployStatus: svc.deployStatus,
       healthCheck: hc,
       createdAt: svc.createdAt,
+      hasMetadata: !!metadata,
     });
-
-    const metadata = metadataByServiceId.get(svc.id);
     const url = urlMap.get(svc.id) || cache.get(svc.id)?.url || null;
 
     if (status === "dead" || status === "sleeping") {
@@ -255,6 +254,10 @@ export async function tick() {
 }
 
 // Claim an idle instance and provision it.
+// 1. POST /pool/provision — writes instructions (agnostic)
+// 2. POST /convos-sdk/setup — creates identity + conversation (proxied through pool-server)
+// 3. POST /convos-sdk/setup/complete — saves config to disk
+// For join: step 2 creates owner conversation, then POST /convos-sdk/join joins the target.
 export async function provision(agentName, instructions, joinUrl) {
   const instance = cache.findClaimable();
   if (!instance) return null;
@@ -268,47 +271,69 @@ export async function provision(agentName, instructions, joinUrl) {
       Authorization: `Bearer ${POOL_API_KEY}`,
     };
 
-    let result;
-    if (joinUrl) {
-      const res = await fetch(`${instance.url}/convos/join`, {
-        method: "POST",
-        headers,
-        signal: AbortSignal.timeout(30_000),
-        body: JSON.stringify({
-          inviteUrl: joinUrl,
-          profileName: agentName,
-          env: process.env.INSTANCE_XMTP_ENV || "dev",
-          instructions,
-        }),
-      });
-      if (!res.ok) {
-        const text = await res.text();
-        throw new Error(`Join failed on ${instance.id}: ${res.status} ${text}`);
-      }
-      result = await res.json();
-      result.joined = true;
-    } else {
-      const res = await fetch(`${instance.url}/convos/conversation`, {
-        method: "POST",
-        headers,
-        signal: AbortSignal.timeout(30_000),
-        body: JSON.stringify({
-          name: agentName,
-          profileName: agentName,
-          env: process.env.INSTANCE_XMTP_ENV || "dev",
-          instructions,
-        }),
-      });
-      if (!res.ok) {
-        const text = await res.text();
-        throw new Error(`Create failed on ${instance.id}: ${res.status} ${text}`);
-      }
-      result = await res.json();
-      result.joined = false;
+    // Step 1: Write instructions via pool API (agnostic)
+    const provisionRes = await fetch(`${instance.url}/pool/provision`, {
+      method: "POST",
+      headers,
+      signal: AbortSignal.timeout(15_000),
+      body: JSON.stringify({ agentName, instructions }),
+    });
+    if (!provisionRes.ok) {
+      const text = await provisionRes.text();
+      throw new Error(`Provision failed on ${instance.id}: ${provisionRes.status} ${text}`);
     }
 
-    if (result.conversationId == null) {
-      throw new Error(`API returned unexpected format: missing conversationId`);
+    // Step 2: Create identity + conversation via convos-sdk (proxied through pool-server)
+    const setupRes = await fetch(`${instance.url}/convos-sdk/setup`, {
+      method: "POST",
+      headers,
+      signal: AbortSignal.timeout(60_000),
+      body: JSON.stringify({
+        name: agentName,
+        env: process.env.INSTANCE_XMTP_ENV || "dev",
+      }),
+    });
+    if (!setupRes.ok) {
+      const text = await setupRes.text();
+      throw new Error(`Setup failed on ${instance.id}: ${setupRes.status} ${text}`);
+    }
+    const setupResult = await setupRes.json();
+
+    // Step 3: Save config to disk
+    const completeRes = await fetch(`${instance.url}/convos-sdk/setup/complete`, {
+      method: "POST",
+      headers,
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!completeRes.ok) {
+      const text = await completeRes.text();
+      throw new Error(`Setup complete failed on ${instance.id}: ${completeRes.status} ${text}`);
+    }
+
+    let result = {
+      conversationId: setupResult.conversationId,
+      inviteUrl: setupResult.inviteUrl || null,
+      joined: false,
+    };
+
+    // Step 4 (optional): Join existing conversation
+    if (joinUrl) {
+      const joinRes = await fetch(`${instance.url}/convos-sdk/join`, {
+        method: "POST",
+        headers,
+        signal: AbortSignal.timeout(30_000),
+        body: JSON.stringify({ invite: joinUrl }),
+      });
+      if (!joinRes.ok) {
+        const text = await joinRes.text();
+        throw new Error(`Join failed on ${instance.id}: ${joinRes.status} ${text}`);
+      }
+      const joinResult = await joinRes.json();
+      result = {
+        conversationId: joinResult.conversationId || result.conversationId,
+        inviteUrl: joinUrl,
+        joined: true,
+      };
     }
 
     // Insert metadata row
