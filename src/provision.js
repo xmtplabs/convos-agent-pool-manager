@@ -112,7 +112,14 @@ export async function provision(opts) {
     };
 
     // Step 4 (optional): Join existing conversation
+    // setup/complete triggers a config hot reload that restarts the channel.
+    // Wait for the agent to be healthy again before joining so the channel
+    // client is ready (avoids DB lock contention from one-off clients).
     if (joinUrl) {
+      const healthyAfterSetup = await waitHealthy(instance.url, 30, 1000);
+      if (!healthyAfterSetup) {
+        throw new Error(`Instance ${instance.id} did not become healthy after setup/complete`);
+      }
       const joinRes = await fetch(`${instance.url}/convos-sdk/join`, {
         method: "POST",
         headers,
