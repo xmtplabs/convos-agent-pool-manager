@@ -112,12 +112,7 @@ export async function createService(name, variables = {}) {
       console.warn(`[railway] Failed to cancel initial deployment for ${serviceId}:`, err);
     }
 
-    // Set resource limits BEFORE deploying so the patch doesn't trigger
-    // a separate deployment (we deploy once at the end).
-    await setResourceLimits(serviceId);
-
-    // Disconnect the repo so the deploy below doesn't also trigger an
-    // auto-deploy from the repo link.
+    // Disconnect repo FIRST so subsequent config changes don't trigger deploys.
     try {
       await gql(
         `mutation($id: String!) { serviceDisconnect(id: $id) { id } }`,
@@ -127,6 +122,9 @@ export async function createService(name, variables = {}) {
     } catch (err) {
       console.warn(`[railway] Failed to disconnect repo for ${serviceId}:`, err);
     }
+
+    // Set resource limits after disconnect (won't trigger a deploy without repo).
+    await setResourceLimits(serviceId);
 
     // Deploy the latest commit from the correct branch — single deployment.
     const deployRef = branch || "HEAD";
