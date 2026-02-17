@@ -3,6 +3,7 @@ import * as db from "./db/pool.js";
 import * as railway from "./railway.js";
 import * as cache from "./cache.js";
 import { deriveStatus } from "./status.js";
+import { ensureVolume, getServiceIdsWithVolumes } from "./volumes.js";
 
 const POOL_API_KEY = process.env.POOL_API_KEY;
 const MIN_IDLE = parseInt(process.env.POOL_MIN_IDLE || "3", 10);
@@ -59,21 +60,6 @@ async function getServiceUrl(serviceId) {
   } catch {
     return null;
   }
-}
-
-// Try to create a volume for a service. Returns true on success.
-async function ensureVolume(serviceId) {
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    try {
-      const vol = await railway.createVolume(serviceId, "/data");
-      console.log(`[pool]   Volume created: ${vol.id}`);
-      return true;
-    } catch (err) {
-      console.warn(`[pool]   Volume attempt ${attempt}/3 failed for ${serviceId}:`, err.message);
-      if (attempt < 3) await new Promise((r) => setTimeout(r, 2000));
-    }
-  }
-  return false;
 }
 
 // Create a single new Railway service (no DB write).
@@ -268,7 +254,7 @@ export async function tick() {
   }
 
   // Ensure all agent services have volumes
-  const volumeServiceIds = await railway.getServiceIdsWithVolumes();
+  const volumeServiceIds = await getServiceIdsWithVolumes();
   if (volumeServiceIds) {
     for (const svc of agentServices) {
       if (!volumeServiceIds.has(svc.id) && svc.deployStatus === "SUCCESS") {

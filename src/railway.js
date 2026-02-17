@@ -1,6 +1,9 @@
+import { setResourceLimits } from "./resources.js";
+import { getVolumeIdsForService, deleteVolumes } from "./volumes.js";
+
 const RAILWAY_API = "https://backboard.railway.com/graphql/v2";
 
-async function gql(query, variables = {}) {
+export async function gql(query, variables = {}) {
   const token = process.env.RAILWAY_API_TOKEN;
   if (!token) throw new Error("RAILWAY_API_TOKEN not set");
 
@@ -150,38 +153,6 @@ export async function createService(name, variables = {}) {
   return serviceId;
 }
 
-export async function setResourceLimits(serviceId, { cpu = 4, memoryGB = 8 } = {}) {
-  const environmentId = process.env.RAILWAY_ENVIRONMENT_ID;
-  try {
-    await gql(
-      `mutation($environmentId: String!, $patch: EnvironmentConfig!, $commitMessage: String) {
-        environmentPatchCommit(environmentId: $environmentId, patch: $patch, commitMessage: $commitMessage)
-      }`,
-      {
-        environmentId,
-        patch: {
-          services: {
-            [serviceId]: {
-              deploy: {
-                limitOverride: {
-                  containers: {
-                    cpu,
-                    memoryBytes: memoryGB * 1024 * 1024 * 1024,
-                  },
-                },
-              },
-            },
-          },
-        },
-        commitMessage: `Set resource limits: ${cpu} vCPU, ${memoryGB} GB RAM`,
-      }
-    );
-    console.log(`[railway]   Resource limits: ${cpu} vCPU, ${memoryGB} GB RAM`);
-  } catch (err) {
-    console.warn(`[railway] Failed to set resource limits for ${serviceId}:`, err.message);
-  }
-}
-
 export async function setVariables(serviceId, variables) {
   const projectId = process.env.RAILWAY_PROJECT_ID;
   const environmentId = process.env.RAILWAY_ENVIRONMENT_ID;
@@ -252,40 +223,8 @@ export async function createVolume(serviceId, mountPath = "/data") {
   return data.volumeCreate;
 }
 
-// Returns a Set of serviceIds that have volumes attached.
-export async function getServiceIdsWithVolumes() {
-  const projectId = process.env.RAILWAY_PROJECT_ID;
-  try {
-    const data = await gql(
-      `query($id: String!) {
-        project(id: $id) {
-          volumes {
-            edges {
-              node {
-                id
-                volumeInstances { edges { node { serviceId } } }
-              }
-            }
-          }
-        }
-      }`,
-      { id: projectId }
-    );
-    const ids = new Set();
-    for (const edge of data.project?.volumes?.edges || []) {
-      for (const vi of edge.node?.volumeInstances?.edges || []) {
-        if (vi.node?.serviceId) ids.add(vi.node.serviceId);
-      }
-    }
-    return ids;
-  } catch (err) {
-    console.warn(`[railway] getServiceIdsWithVolumes failed: ${err.message}`);
-    return null;
-  }
-}
-
 export async function deleteService(serviceId) {
-  // Find volume IDs before deleting the service
+  // Collect volume IDs before deleting (volumes.js)
   const volumeIds = await getVolumeIdsForService(serviceId);
 
   await gql(
@@ -295,48 +234,8 @@ export async function deleteService(serviceId) {
     { id: serviceId }
   );
 
-  // Delete orphaned volumes after service is gone
-  for (const volumeId of volumeIds) {
-    try {
-      await gql(`mutation($volumeId: String!) { volumeDelete(volumeId: $volumeId) }`, { volumeId });
-      console.log(`[railway] Deleted volume ${volumeId} (was attached to ${serviceId})`);
-    } catch (err) {
-      console.warn(`[railway] Failed to delete volume ${volumeId}: ${err.message}`);
-    }
-  }
-}
-
-async function getVolumeIdsForService(serviceId) {
-  const projectId = process.env.RAILWAY_PROJECT_ID;
-  try {
-    const data = await gql(
-      `query($id: String!) {
-        project(id: $id) {
-          volumes {
-            edges {
-              node {
-                id
-                volumeInstances { edges { node { serviceId } } }
-              }
-            }
-          }
-        }
-      }`,
-      { id: projectId }
-    );
-    const ids = [];
-    for (const edge of data.project?.volumes?.edges || []) {
-      const vol = edge.node;
-      const attached = vol.volumeInstances?.edges?.some(
-        (vi) => vi.node?.serviceId === serviceId
-      );
-      if (attached) ids.push(vol.id);
-    }
-    return ids;
-  } catch (err) {
-    console.warn(`[railway] getVolumeIdsForService(${serviceId}) failed: ${err.message}`);
-    return [];
-  }
+  // Clean up orphaned volumes (volumes.js)
+  await deleteVolumes(volumeIds, serviceId);
 }
 
 // List all services in the project with environment info and deploy status.
