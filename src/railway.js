@@ -137,7 +137,42 @@ export async function createService(name, variables = {}) {
     }
   }
 
+  // Set resource limits (defaults: 4 vCPU / 8 GB RAM)
+  await setResourceLimits(serviceId);
+
   return serviceId;
+}
+
+export async function setResourceLimits(serviceId, { cpu = 4, memoryGB = 8 } = {}) {
+  const environmentId = process.env.RAILWAY_ENVIRONMENT_ID;
+  try {
+    await gql(
+      `mutation($environmentId: String!, $patch: EnvironmentConfig!, $commitMessage: String) {
+        environmentPatchCommit(environmentId: $environmentId, patch: $patch, commitMessage: $commitMessage)
+      }`,
+      {
+        environmentId,
+        patch: {
+          services: {
+            [serviceId]: {
+              deploy: {
+                limitOverride: {
+                  containers: {
+                    cpu,
+                    memoryBytes: memoryGB * 1024 * 1024 * 1024,
+                  },
+                },
+              },
+            },
+          },
+        },
+        commitMessage: `Set resource limits: ${cpu} vCPU, ${memoryGB} GB RAM`,
+      }
+    );
+    console.log(`[railway]   Resource limits: ${cpu} vCPU, ${memoryGB} GB RAM`);
+  } catch (err) {
+    console.warn(`[railway] Failed to set resource limits for ${serviceId}:`, err.message);
+  }
 }
 
 export async function setVariables(serviceId, variables) {
