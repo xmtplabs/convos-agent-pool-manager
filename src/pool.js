@@ -441,7 +441,10 @@ export async function drainPool(count) {
 // Kill a specific instance.
 export async function killInstance(id) {
   const inst = cache.getAll().find((i) => i.id === id);
-  if (!inst) throw new Error(`Instance ${id} not found`);
+  if (!inst) return; // Already gone (e.g. duplicate kill request)
+
+  // Remove from cache first to prevent duplicate kills
+  cache.remove(inst.serviceId);
 
   console.log(`[pool] Killing instance ${inst.id} (${inst.agentName || inst.name})`);
 
@@ -451,7 +454,6 @@ export async function killInstance(id) {
     console.warn(`[pool] Failed to delete Railway service:`, err.message);
   }
 
-  cache.remove(inst.serviceId);
   await db.deleteByServiceId(inst.serviceId).catch(() => {});
 }
 
