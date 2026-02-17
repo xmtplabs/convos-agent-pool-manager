@@ -56,7 +56,44 @@ export async function createService(name, variables = {}) {
 
   const serviceId = data.serviceCreate.id;
 
-  // Override start command so agents run pool-server instead of default pnpm start
+  // Step 1: Disconnect repo immediately so config changes don't trigger deploys.
+  try {
+    await gql(
+      `mutation($id: String!) { serviceDisconnect(id: $id) { id } }`,
+      { id: serviceId }
+    );
+    console.log(`[railway]   Disconnected repo (auto-deploys disabled)`);
+  } catch (err) {
+    console.warn(`[railway] Failed to disconnect repo for ${serviceId}:`, err);
+  }
+
+  // Step 2: Cancel ALL in-progress deployments (serviceCreate may have triggered one).
+  try {
+    const depData = await gql(
+      `query($id: String!) {
+        service(id: $id) {
+          deployments(first: 5) { edges { node { id status } } }
+        }
+      }`,
+      { id: serviceId }
+    );
+    const deployments = depData.service?.deployments?.edges || [];
+    for (const { node } of deployments) {
+      try {
+        await gql(
+          `mutation($id: String!) { deploymentCancel(id: $id) }`,
+          { id: node.id }
+        );
+        console.log(`[railway]   Cancelled deployment ${node.id} (status: ${node.status})`);
+      } catch (cancelErr) {
+        console.warn(`[railway]   Failed to cancel deployment ${node.id}:`, cancelErr);
+      }
+    }
+  } catch (err) {
+    console.warn(`[railway] Failed to query/cancel deployments for ${serviceId}:`, err);
+  }
+
+  // Step 3: Set startCommand (safe — repo disconnected, no auto-deploy).
   try {
     await updateServiceInstance(serviceId, { startCommand: "node cli/pool-server.js" });
     console.log(`[railway]   Set startCommand: node cli/pool-server.js`);
@@ -64,8 +101,7 @@ export async function createService(name, variables = {}) {
     console.warn(`[railway] Failed to set startCommand for ${serviceId}:`, err);
   }
 
-  // Set rootDirectory for monorepo support (must be done via serviceInstanceUpdate,
-  // not supported in ServiceCreateInput).
+  // Step 4: Set rootDirectory for monorepo support (safe — repo disconnected).
   const rootDir = process.env.RAILWAY_SOURCE_ROOT_DIR;
   if (rootDir) {
     try {
@@ -76,76 +112,28 @@ export async function createService(name, variables = {}) {
     }
   }
 
+  // Step 5: Set resource limits (safe — repo disconnected).
+  await setResourceLimits(serviceId);
 
-  // serviceCreate always deploys from the repo's default branch (main)
-  // regardless of the branch field. To build from the correct branch:
-  // 1. Cancel the initial main deployment that serviceCreate auto-triggered
-  // 2. Fetch the latest commit SHA from the target branch via GitHub API
-  // 3. Deploy that specific commit via serviceInstanceDeploy
-  //
-  // Variables are passed inline to serviceCreate above so that
-  // setVariables doesn't trigger another main deployment.
-  //
-  // We also cancel-and-redeploy when rootDir is set (even without branch),
-  // because serviceCreate triggers deployment before updateServiceInstance
-  // sets rootDirectory.
-  if (branch || rootDir) {
-    // Cancel the initial main deployment.
-    try {
-      const depData = await gql(
-        `query($id: String!) {
-          service(id: $id) {
-            deployments(first: 1) { edges { node { id } } }
-          }
-        }`,
-        { id: serviceId }
-      );
-      const initialDeploy = depData.service?.deployments?.edges?.[0]?.node;
-      if (initialDeploy) {
-        await gql(
-          `mutation($id: String!) { deploymentCancel(id: $id) }`,
-          { id: initialDeploy.id }
-        );
-        console.log(`[railway] Cancelled initial main deployment ${initialDeploy.id}`);
-      }
-    } catch (err) {
-      console.warn(`[railway] Failed to cancel initial deployment for ${serviceId}:`, err);
-    }
+  // Step 6: Deploy the latest commit from the correct branch — single controlled deploy.
+  const deployRef = branch || "HEAD";
+  try {
+    const ghRes = await fetch(`https://api.github.com/repos/${repo}/commits/${deployRef}`, {
+      headers: { Accept: "application/vnd.github.v3+json" },
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!ghRes.ok) throw new Error(`GitHub API ${ghRes.status}`);
+    const { sha } = await ghRes.json();
 
-    // Disconnect repo FIRST so subsequent config changes don't trigger deploys.
-    try {
-      await gql(
-        `mutation($id: String!) { serviceDisconnect(id: $id) { id } }`,
-        { id: serviceId }
-      );
-      console.log(`[railway]   Disconnected repo (auto-deploys disabled)`);
-    } catch (err) {
-      console.warn(`[railway] Failed to disconnect repo for ${serviceId}:`, err);
-    }
-
-    // Set resource limits after disconnect (won't trigger a deploy without repo).
-    await setResourceLimits(serviceId);
-
-    // Deploy the latest commit from the correct branch — single deployment.
-    const deployRef = branch || "HEAD";
-    try {
-      const ghRes = await fetch(`https://api.github.com/repos/${repo}/commits/${deployRef}`, {
-        headers: { Accept: "application/vnd.github.v3+json" },
-        signal: AbortSignal.timeout(10000),
-      });
-      if (!ghRes.ok) throw new Error(`GitHub API ${ghRes.status}`);
-      const { sha } = await ghRes.json();
-
-      await gql(
-        `mutation($serviceId: String!, $environmentId: String!, $commitSha: String!) {
-          serviceInstanceDeploy(serviceId: $serviceId, environmentId: $environmentId, commitSha: $commitSha)
-        }`,
-        { serviceId, environmentId, commitSha: sha }
-      );
-      console.log(`[railway] Deployed ${repo}@${deployRef} (${sha.slice(0, 8)}) to ${serviceId}`);
-    } catch (err) {
-      console.warn(`[railway] Failed to deploy correct branch for ${serviceId}:`, err);
-    }
+    await gql(
+      `mutation($serviceId: String!, $environmentId: String!, $commitSha: String!) {
+        serviceInstanceDeploy(serviceId: $serviceId, environmentId: $environmentId, commitSha: $commitSha)
+      }`,
+      { serviceId, environmentId, commitSha: sha }
+    );
+    console.log(`[railway] Deployed ${repo}@${deployRef} (${sha.slice(0, 8)}) to ${serviceId}`);
+  } catch (err) {
+    console.warn(`[railway] Failed to deploy correct branch for ${serviceId}:`, err);
   }
 
   return serviceId;
