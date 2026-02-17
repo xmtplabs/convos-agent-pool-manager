@@ -10,25 +10,26 @@ export async function insertMetadata({ id, railwayServiceId, agentName, conversa
 
 // Find metadata by Railway service ID.
 export async function findByServiceId(railwayServiceId) {
-  const rows = await sql`
+  const result = await sql`
     SELECT * FROM agent_metadata WHERE railway_service_id = ${railwayServiceId}
   `;
-  return rows[0] || null;
+  return result.rows[0] || null;
 }
 
 // Find metadata by instance ID.
 export async function findById(id) {
-  const rows = await sql`
+  const result = await sql`
     SELECT * FROM agent_metadata WHERE id = ${id}
   `;
-  return rows[0] || null;
+  return result.rows[0] || null;
 }
 
 // List all metadata rows (for enriching cache with instructions).
 export async function listAll() {
-  return await sql`
+  const result = await sql`
     SELECT * FROM agent_metadata ORDER BY claimed_at DESC
   `;
+  return result.rows;
 }
 
 // Delete metadata row (when dismissing crashed agent or killing instance).

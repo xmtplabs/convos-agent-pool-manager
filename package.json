@@ -12,8 +12,8 @@
     "db:migrate": "node --env-file=.env src/db/migrate.js"
   },
   "dependencies": {
+    "@neondatabase/serverless": "^1.0.2",
     "express": "^5.1.0",
-    "nanoid": "^5.1.5",
-    "postgres": "^3.4.8"
+    "nanoid": "^5.1.5"
   }
 }

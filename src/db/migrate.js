@@ -7,7 +7,7 @@ async function migrate() {
     WHERE table_name = 'pool_instances'
   `;
 
-  if (oldTable.length > 0) {
+  if (oldTable.rows.length > 0) {
     console.log("Migrating pool_instances → agent_metadata...");
 
     await sql`ALTER TABLE pool_instances RENAME TO agent_metadata`;
@@ -39,7 +39,7 @@ async function migrate() {
 
     // Delete non-claimed rows (no useful metadata)
     const deleted = await sql`DELETE FROM agent_metadata WHERE agent_name IS NULL`;
-    console.log(`  Cleaned ${deleted.count} non-claimed rows`);
+    console.log(`  Cleaned ${deleted.rowCount || 0} non-claimed rows`);
 
     // Match fresh install schema: agent_name should be NOT NULL
     await sql`ALTER TABLE agent_metadata ALTER COLUMN agent_name SET NOT NULL`;
@@ -52,7 +52,7 @@ async function migrate() {
       WHERE table_name = 'agent_metadata'
     `;
 
-    if (newTable.length > 0) {
+    if (newTable.rows.length > 0) {
       console.log("agent_metadata table already exists. Nothing to do.");
     } else {
       // Fresh install — create agent_metadata directly
@@ -72,12 +72,10 @@ async function migrate() {
     }
   }
 
-  await sql.end();
   process.exit(0);
 }
 
-migrate().catch(async (err) => {
+migrate().catch((err) => {
   console.error("Migration failed:", err);
-  await sql.end();
   process.exit(1);
 });
