@@ -8,8 +8,10 @@ const DEAD_STATUSES = new Set(["FAILED", "CRASHED", "REMOVED", "SKIPPED"]);
 // hasMetadata indicates whether the pool manager has provisioned this instance (claimed).
 export function deriveStatus({ deployStatus, healthCheck = null, createdAt = null, hasMetadata = false }) {
   if (deployStatus === "SLEEPING") return "sleeping";
-  if (DEAD_STATUSES.has(deployStatus)) return "dead";
-  if (STARTING_STATUSES.has(deployStatus)) return "starting";
+  if (DEAD_STATUSES.has(deployStatus)) return hasMetadata ? "crashed" : "dead";
+
+  // Claimed instances that are rebuilding (e.g. after provision redeploy) stay "claimed"
+  if (STARTING_STATUSES.has(deployStatus)) return hasMetadata ? "claimed" : "starting";
 
   if (deployStatus === "SUCCESS") {
     if (healthCheck?.ready) {
@@ -17,10 +19,11 @@ export function deriveStatus({ deployStatus, healthCheck = null, createdAt = nul
     }
     // Unreachable — check age
     const age = createdAt ? Date.now() - new Date(createdAt).getTime() : Infinity;
+    if (hasMetadata) return "claimed"; // claimed but restarting — don't lose status
     return age < STUCK_TIMEOUT_MS ? "starting" : "dead";
   }
 
   // Unknown or null deploy status — treat as starting if young
   const age = createdAt ? Date.now() - new Date(createdAt).getTime() : Infinity;
-  return age < STUCK_TIMEOUT_MS ? "starting" : "dead";
+  return hasMetadata ? "claimed" : (age < STUCK_TIMEOUT_MS ? "starting" : "dead");
 }

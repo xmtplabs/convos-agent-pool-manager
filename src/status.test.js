@@ -62,4 +62,21 @@ describe("deriveStatus", () => {
   it("null deploy status + young → starting", () => {
     assert.equal(deriveStatus({ deployStatus: null, createdAt: young }), "starting");
   });
+
+  // Claimed instances (hasMetadata) should preserve status through redeploys
+  it("BUILDING + hasMetadata → claimed", () => {
+    assert.equal(deriveStatus({ deployStatus: "BUILDING", createdAt: young, hasMetadata: true }), "claimed");
+  });
+
+  it("DEPLOYING + hasMetadata → claimed", () => {
+    assert.equal(deriveStatus({ deployStatus: "DEPLOYING", createdAt: young, hasMetadata: true }), "claimed");
+  });
+
+  it("FAILED + hasMetadata → crashed", () => {
+    assert.equal(deriveStatus({ deployStatus: "FAILED", createdAt: young, hasMetadata: true }), "crashed");
+  });
+
+  it("SUCCESS + unreachable + hasMetadata → claimed", () => {
+    assert.equal(deriveStatus({ deployStatus: "SUCCESS", healthCheck: null, createdAt: young, hasMetadata: true }), "claimed");
+  });
 });
