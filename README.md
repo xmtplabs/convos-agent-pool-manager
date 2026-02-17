@@ -34,7 +34,7 @@ This is a **2-repo system**:
 | **this repo** (`convos-agent-pool-manager`) | Pool manager + agent Dockerfile/entrypoint in `agent/` |
 | [openclaw](https://github.com/xmtplabs/openclaw) | The AI gateway that runs inside each agent instance |
 
-The `agent/Dockerfile` clones OpenClaw from source, builds it, and the `agent/entrypoint.sh` configures and starts the gateway.
+The `agent/Dockerfile` uses the pre-built `ghcr.io/xmtplabs/openclaw` image and the `agent/entrypoint.sh` configures and starts the gateway.
 
 ## Setup
 
@@ -63,7 +63,7 @@ cp .env.example .env
 | `RAILWAY_SOURCE_REPO` | GitHub repo to deploy (e.g. `xmtplabs/convos-agent-pool-manager`) |
 | `RAILWAY_SOURCE_BRANCH` | Branch to deploy from (e.g. `staging`, `main`) |
 | `RAILWAY_SOURCE_ROOT_DIR` | Subdirectory containing the Dockerfile (`agent`) |
-| `OPENCLAW_GIT_REF` | OpenClaw git ref to build from (default: `staging` or `main`) |
+| `OPENCLAW_IMAGE_TAG` | OpenClaw image tag to resolve (default: `staging` or `main`) |
 | `INSTANCE_ANTHROPIC_API_KEY` | Anthropic API key injected into each instance |
 | `INSTANCE_XMTP_ENV` | XMTP environment (`dev` or `production`) |
 | `POOL_MIN_IDLE` | Minimum idle instances to maintain (default `3`) |

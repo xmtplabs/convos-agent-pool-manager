@@ -3,6 +3,7 @@ import * as db from "./db/pool.js";
 import * as railway from "./railway.js";
 import * as cache from "./cache.js";
 import { deriveStatus } from "./status.js";
+import { resolveOpenclawImage } from "./ghcr.js";
 
 const POOL_API_KEY = process.env.POOL_API_KEY;
 const MIN_IDLE = parseInt(process.env.POOL_MIN_IDLE || "3", 10);
@@ -10,14 +11,22 @@ const MAX_TOTAL = parseInt(process.env.POOL_MAX_TOTAL || "10", 10);
 
 const IS_PRODUCTION = (process.env.POOL_ENVIRONMENT || "staging") === "production";
 
-function instanceEnvVars() {
-  return {
+// Circuit breaker: stop creating instances after repeated digest resolution failures
+// (e.g. OPENCLAW_IMAGE_TAG points to a nonexistent tag). Resets on success.
+const DIGEST_FAIL_THRESHOLD = 3;
+let digestFailCount = 0;
+
+function instanceEnvVars(openclawImage) {
+  const vars = {
     ANTHROPIC_API_KEY: process.env.INSTANCE_ANTHROPIC_API_KEY || "",
     XMTP_ENV: process.env.INSTANCE_XMTP_ENV || "dev",
     GATEWAY_AUTH_TOKEN: POOL_API_KEY,
-    OPENCLAW_GIT_REF: process.env.OPENCLAW_GIT_REF || (IS_PRODUCTION ? "main" : "staging"),
     PORT: "8080",
   };
+  if (openclawImage) {
+    vars.OPENCLAW_IMAGE = openclawImage;
+  }
+  return vars;
 }
 
 // Health-check a single instance via /convos/status.
@@ -52,14 +61,28 @@ export async function createInstance() {
 
   console.log(`[pool] Creating instance ${name}...`);
 
-  const serviceId = await railway.createService(name, instanceEnvVars());
+  // Resolve openclaw image digest for deterministic builds
+  const tag = process.env.OPENCLAW_IMAGE_TAG || (IS_PRODUCTION ? "main" : "staging");
+  if (digestFailCount >= DIGEST_FAIL_THRESHOLD) {
+    throw new Error(`[circuit-breaker] Openclaw image resolution failed ${digestFailCount} times in a row (tag="${tag}"). Fix OPENCLAW_IMAGE_TAG or wait for the image to be published.`);
+  }
+  let openclawImage;
+  try {
+    openclawImage = await resolveOpenclawImage(tag);
+    digestFailCount = 0;
+  } catch (err) {
+    digestFailCount++;
+    console.error(`[pool] Failed to resolve openclaw digest (${digestFailCount}/${DIGEST_FAIL_THRESHOLD}): ${err.message}`);
+    throw err;
+  }
+
+  const serviceId = await railway.createService(name, instanceEnvVars(openclawImage));
   console.log(`[pool]   Railway service created: ${serviceId}`);
 
   const domain = await railway.createDomain(serviceId);
   const url = `https://${domain}`;
   console.log(`[pool]   Domain: ${url}`);
 
-  // Add to cache immediately as starting
   cache.set(serviceId, {
     serviceId,
     id,
