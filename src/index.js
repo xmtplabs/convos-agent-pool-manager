@@ -1,7 +1,7 @@
 import express from "express";
 import * as pool from "./pool.js";
 import * as cache from "./cache.js";
-import { OPENROUTER_MODELS, IDENTITY_PRESETS } from "./options.js";
+import { OPENROUTER_MODELS } from "./options.js";
 
 const PORT = parseInt(process.env.PORT || "3001", 10);
 const POOL_API_KEY = process.env.POOL_API_KEY;
@@ -41,9 +41,9 @@ app.get("/api/pool/agents", (_req, res) => {
   res.json({ claimed, crashed });
 });
 
-// Options for form (models, identity presets)
+// Options for form (models)
 app.get("/api/pool/options", (_req, res) => {
-  res.json({ models: OPENROUTER_MODELS, identityPresets: Object.keys(IDENTITY_PRESETS) });
+  res.json({ models: OPENROUTER_MODELS });
 });
 
 // Kill a launched instance
@@ -718,13 +718,6 @@ app.get("/", (_req, res) => {
             </select>
           </div>
           <div class="setting-group">
-            <label class="setting-label" for="identity">Agent Identity</label>
-            <select id="identity" name="identityPreset" class="setting-input">
-              <option value="">None</option>
-              ${Object.keys(IDENTITY_PRESETS).map((k) => `<option value="${k}">${k.charAt(0).toUpperCase() + k.slice(1)}</option>`).join("")}
-            </select>
-          </div>
-          <div class="setting-group">
             <label class="setting-label" for="instructions">Instructions</label>
             <textarea id="instructions" name="instructions" class="setting-input" placeholder="You are a helpful trip planner for Tokyo..." required></textarea>
           </div>
@@ -984,8 +977,7 @@ app.get("/", (_req, res) => {
         agentName:agentName,
         instructions:f.instructions.value.trim(),
         channels:{email:document.getElementById('ch-email').checked,sms:document.getElementById('ch-sms').checked,crypto:document.getElementById('ch-crypto').checked},
-        model:f.model.value||undefined,
-        identityPreset:f.identity.value||undefined
+        model:f.model.value||undefined
       };
       if(isJoinMode){
         var jUrl=joinUrlInput.value.trim();
@@ -1077,7 +1069,7 @@ app.get("/api/pool/status", requireAuth, (_req, res) => {
 
 // Launch an agent — claim an idle instance and provision it with instructions.
 app.post("/api/pool/claim", requireAuth, async (req, res) => {
-  const { agentName, instructions, joinUrl, channels, model, identityPreset } = req.body || {};
+  const { agentName, instructions, joinUrl, channels, model } = req.body || {};
   if (!instructions || typeof instructions !== "string") {
     return res.status(400).json({ error: "instructions (string) is required" });
   }
@@ -1101,7 +1093,6 @@ app.post("/api/pool/claim", requireAuth, async (req, res) => {
       joinUrl: joinUrl || undefined,
       channels: channels && typeof channels === "object" ? channels : { email: true, sms: true, crypto: true },
       model: model && typeof model === "string" ? model : undefined,
-      identityPreset: identityPreset && typeof identityPreset === "string" ? identityPreset : undefined,
     });
     if (!result) {
       return res.status(503).json({

@@ -15,7 +15,6 @@ import * as db from "./db/pool.js";
 import * as railway from "./railway.js";
 import * as cache from "./cache.js";
 import { instanceEnvVarsForProvision } from "./pool.js";
-import { resolveIdentityPreset } from "./options.js";
 
 const POOL_API_KEY = process.env.POOL_API_KEY;
 
@@ -41,7 +40,6 @@ export async function provision(opts) {
     joinUrl,
     channels = { email: true, sms: true, crypto: true },
     model,
-    identityPreset,
   } = opts;
 
   const instance = cache.findClaimable();
@@ -65,13 +63,12 @@ export async function provision(opts) {
     const healthy = await waitHealthy(instance.url);
     if (!healthy) throw new Error(`Instance ${instance.id} did not become healthy after redeploy`);
 
-    // Step 2: Write instructions via pool API (identity preset prepended)
-    const fullInstructions = resolveIdentityPreset(identityPreset) + (instructions || "");
+    // Step 2: Write instructions via pool API
     const provisionRes = await fetch(`${instance.url}/pool/provision`, {
       method: "POST",
       headers,
       signal: AbortSignal.timeout(15_000),
-      body: JSON.stringify({ instructions: fullInstructions }),
+      body: JSON.stringify({ agentName, instructions: instructions || "" }),
     });
     if (!provisionRes.ok) {
       const text = await provisionRes.text();
