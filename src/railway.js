@@ -109,7 +109,23 @@ export async function createService(name, variables = {}) {
       console.warn(`[railway] Failed to cancel initial deployment for ${serviceId}:`, err);
     }
 
-    // Deploy the latest commit from the correct branch (or default branch).
+    // Set resource limits BEFORE deploying so the patch doesn't trigger
+    // a separate deployment (we deploy once at the end).
+    await setResourceLimits(serviceId);
+
+    // Disconnect the repo so the deploy below doesn't also trigger an
+    // auto-deploy from the repo link.
+    try {
+      await gql(
+        `mutation($id: String!) { serviceDisconnect(id: $id) { id } }`,
+        { id: serviceId }
+      );
+      console.log(`[railway]   Disconnected repo (auto-deploys disabled)`);
+    } catch (err) {
+      console.warn(`[railway] Failed to disconnect repo for ${serviceId}:`, err);
+    }
+
+    // Deploy the latest commit from the correct branch — single deployment.
     const deployRef = branch || "HEAD";
     try {
       const ghRes = await fetch(`https://api.github.com/repos/${repo}/commits/${deployRef}`, {
@@ -129,22 +145,7 @@ export async function createService(name, variables = {}) {
     } catch (err) {
       console.warn(`[railway] Failed to deploy correct branch for ${serviceId}:`, err);
     }
-
-    // Disconnect the repo so pushes don't auto-redeploy all agent instances.
-    // The correct commit is already deployed above; no further repo link needed.
-    try {
-      await gql(
-        `mutation($id: String!) { serviceDisconnect(id: $id) { id } }`,
-        { id: serviceId }
-      );
-      console.log(`[railway]   Disconnected repo (auto-deploys disabled)`);
-    } catch (err) {
-      console.warn(`[railway] Failed to disconnect repo for ${serviceId}:`, err);
-    }
   }
-
-  // Set resource limits (defaults: 4 vCPU / 8 GB RAM)
-  await setResourceLimits(serviceId);
 
   return serviceId;
 }
