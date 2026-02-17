@@ -4,7 +4,7 @@ import * as railway from "./railway.js";
 import * as cache from "./cache.js";
 import { deriveStatus } from "./status.js";
 import { ensureVolume, getServiceIdsWithVolumes } from "./volumes.js";
-import { instanceEnvVars, instanceEnvVarsForProvision } from "./keys.js";
+import { instanceEnvVars, instanceEnvVarsForProvision, resolveOpenRouterApiKey } from "./keys.js";
 
 const POOL_API_KEY = process.env.POOL_API_KEY;
 const MIN_IDLE = parseInt(process.env.POOL_MIN_IDLE || "3", 10);
@@ -47,7 +47,11 @@ export async function createInstance() {
 
   console.log(`[pool] Creating instance ${name}...`);
 
-  const serviceId = await railway.createService(name, instanceEnvVars());
+  const vars = { ...instanceEnvVars() };
+  const openRouterKey = await resolveOpenRouterApiKey(id);
+  if (openRouterKey) vars.OPENROUTER_API_KEY = openRouterKey;
+
+  const serviceId = await railway.createService(name, vars);
   console.log(`[pool]   Railway service created: ${serviceId}`);
 
   // Attach persistent volume for OpenClaw state
@@ -67,6 +71,7 @@ export async function createInstance() {
     status: "starting",
     createdAt: new Date().toISOString(),
     deployStatus: "BUILDING",
+    openRouterApiKey: openRouterKey || undefined,
   });
 
   return { id, serviceId, url, name };
@@ -188,7 +193,8 @@ export async function tick() {
       continue;
     }
 
-    // Build cache entry
+    // Build cache entry (preserve openRouterApiKey from create)
+    const existing = cache.get(svc.id);
     const entry = {
       serviceId: svc.id,
       id: metadata?.id || svc.name.replace("convos-agent-", ""),
@@ -198,6 +204,7 @@ export async function tick() {
       createdAt: svc.createdAt,
       deployStatus: svc.deployStatus,
     };
+    if (existing?.openRouterApiKey) entry.openRouterApiKey = existing.openRouterApiKey;
 
     // Enrich with metadata
     if (metadata) {

@@ -15,6 +15,7 @@ import * as db from "./db/pool.js";
 import * as railway from "./railway.js";
 import * as cache from "./cache.js";
 import { instanceEnvVarsForProvision } from "./pool.js";
+import { resolveOpenRouterApiKey } from "./keys.js";
 
 const POOL_API_KEY = process.env.POOL_API_KEY;
 
@@ -49,7 +50,8 @@ export async function provision(opts) {
     };
 
     // Step 1: setVariables, redeploy, wait healthy
-    const vars = instanceEnvVarsForProvision({ model, agentName });
+    const openRouterKey = instance.openRouterApiKey ?? (await resolveOpenRouterApiKey(instance.id));
+    const vars = instanceEnvVarsForProvision({ model, agentName, openRouterApiKey: openRouterKey });
     const variables = Object.fromEntries(Object.entries(vars).map(([k, v]) => [k, String(v ?? "")]));
     await railway.setVariables(instance.serviceId, variables);
     console.log(`[provision] Set vars, triggering redeploy...`);
