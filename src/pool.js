@@ -67,12 +67,16 @@ export async function createInstance() {
   const serviceId = await railway.createService(name, instanceEnvVars());
   console.log(`[pool]   Railway service created: ${serviceId}`);
 
-  // Attach persistent volume for OpenClaw state
-  try {
-    const vol = await railway.createVolume(serviceId, "/data");
-    console.log(`[pool]   Volume created: ${vol.id}`);
-  } catch (err) {
-    console.warn(`[pool]   Failed to create volume for ${serviceId}:`, err.message);
+  // Attach persistent volume for OpenClaw state (retry up to 3 times)
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const vol = await railway.createVolume(serviceId, "/data");
+      console.log(`[pool]   Volume created: ${vol.id}`);
+      break;
+    } catch (err) {
+      console.warn(`[pool]   Volume attempt ${attempt}/3 failed for ${serviceId}:`, err.message);
+      if (attempt < 3) await new Promise((r) => setTimeout(r, 2000));
+    }
   }
 
   const domain = await railway.createDomain(serviceId);
