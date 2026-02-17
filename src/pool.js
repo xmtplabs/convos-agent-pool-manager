@@ -200,18 +200,12 @@ export async function tick() {
       deployStatus: svc.deployStatus,
     };
 
-    // Enrich with health-check data
-    if (hc) {
-      entry.inviteUrl = hc.inviteUrl || metadata?.invite_url || null;
-      entry.conversationId = hc.conversationId || hc.conversation || metadata?.conversation_id || null;
-    }
-
     // Enrich with metadata
     if (metadata) {
       entry.agentName = metadata.agent_name;
       entry.instructions = metadata.instructions;
-      entry.inviteUrl = entry.inviteUrl || metadata.invite_url;
-      entry.conversationId = entry.conversationId || metadata.conversation_id;
+      entry.inviteUrl = metadata.invite_url;
+      entry.conversationId = metadata.conversation_id;
       entry.claimedAt = metadata.claimed_at;
     }
 
