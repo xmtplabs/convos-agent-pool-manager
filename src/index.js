@@ -1118,17 +1118,17 @@ app.post("/api/pool/drain", requireAuth, async (req, res) => {
   }
 });
 
-// --- Background tick (commented out for one-by-one testing) ---
+// --- Background tick ---
 // Rebuild cache from Railway + health checks every 30 seconds.
-// const TICK_INTERVAL = parseInt(process.env.TICK_INTERVAL_MS || "30000", 10);
-// setInterval(() => {
-//   pool.tick().catch((err) => console.error("[tick] Error:", err));
-// }, TICK_INTERVAL);
+const TICK_INTERVAL = parseInt(process.env.TICK_INTERVAL_MS || "30000", 10);
+setInterval(() => {
+  pool.tick().catch((err) => console.error("[tick] Error:", err));
+}, TICK_INTERVAL);
 
 // Run initial tick on startup
-// setTimeout(() => {
-//   pool.tick().catch((err) => console.error("[tick] Initial tick error:", err));
-// }, 2000);
+setTimeout(() => {
+  pool.tick().catch((err) => console.error("[tick] Initial tick error:", err));
+}, 2000);
 
 app.listen(PORT, () => {
   console.log(`Pool manager listening on :${PORT}`);
