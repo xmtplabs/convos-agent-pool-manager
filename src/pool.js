@@ -15,6 +15,7 @@ function instanceEnvVars() {
     ANTHROPIC_API_KEY: process.env.INSTANCE_ANTHROPIC_API_KEY || "",
     XMTP_ENV: process.env.INSTANCE_XMTP_ENV || "dev",
     GATEWAY_AUTH_TOKEN: POOL_API_KEY,
+    OPENCLAW_STATE_DIR: "/data",
     PORT: "8080",
   };
 }
@@ -53,6 +54,14 @@ export async function createInstance() {
 
   const serviceId = await railway.createService(name, instanceEnvVars());
   console.log(`[pool]   Railway service created: ${serviceId}`);
+
+  // Attach persistent volume for OpenClaw state
+  try {
+    const vol = await railway.createVolume(serviceId, "/data");
+    console.log(`[pool]   Volume created: ${vol.id}`);
+  } catch (err) {
+    console.warn(`[pool]   Failed to create volume for ${serviceId}:`, err.message);
+  }
 
   const domain = await railway.createDomain(serviceId);
   const url = `https://${domain}`;

@@ -186,6 +186,22 @@ export async function updateServiceInstance(serviceId, settings = {}) {
   );
 }
 
+export async function createVolume(serviceId, mountPath = "/data") {
+  const projectId = process.env.RAILWAY_PROJECT_ID;
+  const environmentId = process.env.RAILWAY_ENVIRONMENT_ID;
+
+  const data = await gql(
+    `mutation($input: VolumeCreateInput!) {
+      volumeCreate(input: $input) { id name }
+    }`,
+    {
+      input: { projectId, serviceId, mountPath, environmentId },
+    }
+  );
+
+  return data.volumeCreate;
+}
+
 export async function deleteService(serviceId) {
   await gql(
     `mutation($id: String!) {
