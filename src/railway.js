@@ -243,12 +243,48 @@ export async function getServiceIdsWithVolumes() {
 }
 
 export async function deleteService(serviceId) {
+  // Delete attached volumes first (Railway doesn't auto-delete them)
+  await deleteVolumesForService(serviceId);
+
   await gql(
     `mutation($id: String!) {
       serviceDelete(id: $id)
     }`,
     { id: serviceId }
   );
+}
+
+async function deleteVolumesForService(serviceId) {
+  const projectId = process.env.RAILWAY_PROJECT_ID;
+  try {
+    const data = await gql(
+      `query($id: String!) {
+        project(id: $id) {
+          volumes {
+            edges {
+              node {
+                id
+                volumeInstances { edges { node { serviceId } } }
+              }
+            }
+          }
+        }
+      }`,
+      { id: projectId }
+    );
+    for (const edge of data.project?.volumes?.edges || []) {
+      const vol = edge.node;
+      const attached = vol.volumeInstances?.edges?.some(
+        (vi) => vi.node?.serviceId === serviceId
+      );
+      if (attached) {
+        await gql(`mutation($id: String!) { volumeDelete(id: $id) }`, { id: vol.id });
+        console.log(`[railway] Deleted volume ${vol.id} for service ${serviceId}`);
+      }
+    }
+  } catch (err) {
+    console.warn(`[railway] deleteVolumesForService(${serviceId}) failed: ${err.message}`);
+  }
 }
 
 // List all services in the project with environment info and deploy status.
