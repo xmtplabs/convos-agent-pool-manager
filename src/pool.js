@@ -13,6 +13,10 @@ const IS_PRODUCTION = (process.env.POOL_ENVIRONMENT || "staging") === "productio
 function instanceEnvVars() {
   return {
     ANTHROPIC_API_KEY: process.env.INSTANCE_ANTHROPIC_API_KEY || "",
+    OPENROUTER_API_KEY: process.env.INSTANCE_OPENROUTER_API_KEY || "",
+    AGENTMAIL_API_KEY: process.env.INSTANCE_AGENTMAIL_API_KEY || "",
+    BANKR_API_KEY: process.env.INSTANCE_BANKR_API_KEY || "",
+    TELNYX_API_KEY: process.env.INSTANCE_TELNYX_API_KEY || "",
     XMTP_ENV: process.env.INSTANCE_XMTP_ENV || "dev",
     GATEWAY_AUTH_TOKEN: POOL_API_KEY,
     OPENCLAW_STATE_DIR: "/data",
