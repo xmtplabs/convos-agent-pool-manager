@@ -1,6 +1,7 @@
 import express from "express";
 import * as pool from "./pool.js";
 import * as cache from "./cache.js";
+import { OPENROUTER_MODELS, IDENTITY_PRESETS } from "./options.js";
 
 const PORT = parseInt(process.env.PORT || "3001", 10);
 const POOL_API_KEY = process.env.POOL_API_KEY;
@@ -38,6 +39,11 @@ app.get("/api/pool/agents", (_req, res) => {
   const claimed = cache.getByStatus("claimed");
   const crashed = cache.getByStatus("crashed");
   res.json({ claimed, crashed });
+});
+
+// Options for form (models, identity presets)
+app.get("/api/pool/options", (_req, res) => {
+  res.json({ models: OPENROUTER_MODELS, identityPresets: Object.keys(IDENTITY_PRESETS) });
 });
 
 // Kill a launched instance
@@ -275,6 +281,8 @@ app.get("/", (_req, res) => {
     .setting-input:focus { outline: none; border-color: #000; }
     .setting-input::placeholder { color: #B2B2B2; }
     textarea.setting-input { resize: vertical; min-height: 80px; }
+    .checkbox-row { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 8px; }
+    .checkbox-row label { display: flex; align-items: center; gap: 6px; font-size: 14px; color: #666; cursor: pointer; }
 
     .btn-primary {
       background: #FC4F37;
@@ -696,6 +704,27 @@ app.get("/", (_req, res) => {
             <input id="name" name="name" class="setting-input" placeholder="e.g. Tokyo Trip" required />
           </div>
           <div class="setting-group">
+            <span class="setting-label">Channels</span>
+            <div class="checkbox-row">
+              <label><input type="checkbox" name="channel-email" id="ch-email" checked /> Email</label>
+              <label><input type="checkbox" name="channel-sms" id="ch-sms" checked /> SMS</label>
+              <label><input type="checkbox" name="channel-crypto" id="ch-crypto" checked /> Crypto</label>
+            </div>
+          </div>
+          <div class="setting-group">
+            <label class="setting-label" for="model">Model</label>
+            <select id="model" name="model" class="setting-input">
+              ${OPENROUTER_MODELS.map((m) => `<option value="${m.id}">${m.name}</option>`).join("")}
+            </select>
+          </div>
+          <div class="setting-group">
+            <label class="setting-label" for="identity">Agent Identity</label>
+            <select id="identity" name="identityPreset" class="setting-input">
+              <option value="">None</option>
+              ${Object.keys(IDENTITY_PRESETS).map((k) => `<option value="${k}">${k.charAt(0).toUpperCase() + k.slice(1)}</option>`).join("")}
+            </select>
+          </div>
+          <div class="setting-group">
             <label class="setting-label" for="instructions">Instructions</label>
             <textarea id="instructions" name="instructions" class="setting-input" placeholder="You are a helpful trip planner for Tokyo..." required></textarea>
           </div>
@@ -951,7 +980,13 @@ app.get("/", (_req, res) => {
     f.onsubmit=async function(e){
       e.preventDefault();
       var agentName=f.name.value.trim();
-      var payload={agentName:agentName,instructions:f.instructions.value.trim()};
+      var payload={
+        agentName:agentName,
+        instructions:f.instructions.value.trim(),
+        channels:{email:document.getElementById('ch-email').checked,sms:document.getElementById('ch-sms').checked,crypto:document.getElementById('ch-crypto').checked},
+        model:f.model.value||undefined,
+        identityPreset:f.identity.value||undefined
+      };
       if(isJoinMode){
         var jUrl=joinUrlInput.value.trim();
         if(!jUrl){errorEl.textContent='Conversation link is required';errorEl.style.display='block';return;}
@@ -1042,7 +1077,7 @@ app.get("/api/pool/status", requireAuth, (_req, res) => {
 
 // Launch an agent — claim an idle instance and provision it with instructions.
 app.post("/api/pool/claim", requireAuth, async (req, res) => {
-  const { agentName, instructions, joinUrl } = req.body || {};
+  const { agentName, instructions, joinUrl, channels, model, identityPreset } = req.body || {};
   if (!instructions || typeof instructions !== "string") {
     return res.status(400).json({ error: "instructions (string) is required" });
   }
@@ -1060,7 +1095,14 @@ app.post("/api/pool/claim", requireAuth, async (req, res) => {
   }
 
   try {
-    const result = await pool.provision(agentName, instructions, joinUrl || undefined);
+    const result = await pool.provision({
+      agentName,
+      instructions,
+      joinUrl: joinUrl || undefined,
+      channels: channels && typeof channels === "object" ? channels : { email: true, sms: true, crypto: true },
+      model: model && typeof model === "string" ? model : undefined,
+      identityPreset: identityPreset && typeof identityPreset === "string" ? identityPreset : undefined,
+    });
     if (!result) {
       return res.status(503).json({
         error: "No idle instances available. Try again in a few minutes.",

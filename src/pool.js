@@ -23,16 +23,34 @@ function instanceEnvVars() {
     SETUP_PASSWORD: process.env.INSTANCE_SETUP_PASSWORD || "",
     XMTP_ENV: process.env.INSTANCE_XMTP_ENV || "dev",
     CHROMIUM_PATH: "/usr/bin/chromium",
-    AGENTMAIL_API_KEY: process.env.INSTANCE_AGENTMAIL_API_KEY || "",
-    AGENTMAIL_INBOX_ID: process.env.INSTANCE_AGENTMAIL_INBOX_ID || "",
-    BANKR_API_KEY: process.env.INSTANCE_BANKR_API_KEY || "",
-    PRIVATE_WALLET_KEY: process.env.INSTANCE_PRIVATE_WALLET_KEY || "",
-    TELNYX_API_KEY: process.env.INSTANCE_TELNYX_API_KEY || "",
-    TELNYX_PHONE_NUMBER: process.env.INSTANCE_TELNYX_PHONE_NUMBER || "",
-    TELNYX_MESSAGING_PROFILE_ID: process.env.INSTANCE_TELNYX_MESSAGING_PROFILE_ID || "",
     GATEWAY_AUTH_TOKEN: POOL_API_KEY,
-    OPENCLAW_STATE_DIR: "/data"
+    OPENCLAW_STATE_DIR: "/data",
   };
+}
+
+/** Env vars for provision (claim time). Activated channels get keys; disabled get "". */
+export function instanceEnvVarsForProvision(opts) {
+  const { channels = {}, model, agentName } = opts;
+  const base = {
+    OPENCLAW_STATE_DIR: "/data",
+    GATEWAY_AUTH_TOKEN: POOL_API_KEY,
+    CHROMIUM_PATH: "/usr/bin/chromium",
+    XMTP_ENV: process.env.INSTANCE_XMTP_ENV || "dev",
+    OPENCLAW_GATEWAY_TOKEN: process.env.INSTANCE_OPENCLAW_GATEWAY_TOKEN || "",
+    SETUP_PASSWORD: process.env.INSTANCE_SETUP_PASSWORD || "",
+    OPENROUTER_API_KEY: process.env.INSTANCE_OPENROUTER_API_KEY || "",
+    OPENROUTER_MANAGEMENT_KEY: process.env.INSTANCE_OPENROUTER_MANAGEMENT_KEY || "",
+    OPENCLAW_PRIMARY_MODEL: model || process.env.INSTANCE_OPENCLAW_PRIMARY_MODEL || "",
+    AGENT_NAME: agentName || "",
+  };
+  base.AGENTMAIL_API_KEY = channels.email !== false ? (process.env.INSTANCE_AGENTMAIL_API_KEY || "") : "";
+  base.AGENTMAIL_INBOX_ID = channels.email !== false ? (process.env.INSTANCE_AGENTMAIL_INBOX_ID || "") : "";
+  base.TELNYX_API_KEY = channels.sms !== false ? (process.env.INSTANCE_TELNYX_API_KEY || "") : "";
+  base.TELNYX_PHONE_NUMBER = channels.sms !== false ? (process.env.INSTANCE_TELNYX_PHONE_NUMBER || "") : "";
+  base.TELNYX_MESSAGING_PROFILE_ID = channels.sms !== false ? (process.env.INSTANCE_TELNYX_MESSAGING_PROFILE_ID || "") : "";
+  base.BANKR_API_KEY = channels.crypto !== false ? (process.env.INSTANCE_BANKR_API_KEY || "") : "";
+  base.PRIVATE_WALLET_KEY = channels.crypto !== false ? (process.env.INSTANCE_PRIVATE_WALLET_KEY || "") : "";
+  return base;
 }
 
 // Health-check a single instance via /pool/health.

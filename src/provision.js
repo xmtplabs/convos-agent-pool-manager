@@ -1,11 +1,12 @@
 /**
  * Provisioning: claim an idle instance and set up convos identity + conversation.
  *
- * 4-step HTTP flow against the instance's pool-server:
- *   1. POST /pool/provision       — write AGENTS.md
- *   2. POST /convos-sdk/setup     — create XMTP identity + conversation
- *   3. POST /convos-sdk/setup/complete — persist config to disk
- *   4. POST /convos-sdk/join      — (optional) join existing conversation
+ * Flow:
+ *   1. setVariables (channels, model, name) → redeploy → wait healthy
+ *   2. POST /pool/provision — write AGENTS.md (instructions with identity preset)
+ *   3. POST /convos-sdk/setup — create XMTP identity + conversation
+ *   4. POST /convos-sdk/setup/complete — persist config to disk
+ *   5. POST /convos-sdk/join — (optional) join existing conversation
  *
  * To disable convos provisioning, comment out the import in pool.js.
  */
@@ -13,10 +14,36 @@
 import * as db from "./db/pool.js";
 import * as railway from "./railway.js";
 import * as cache from "./cache.js";
+import { instanceEnvVarsForProvision } from "./pool.js";
+import { resolveIdentityPreset } from "./options.js";
 
 const POOL_API_KEY = process.env.POOL_API_KEY;
 
-export async function provision(agentName, instructions, joinUrl) {
+async function waitHealthy(url, maxAttempts = 180, intervalMs = 2000) {
+  const headers = { Authorization: `Bearer ${POOL_API_KEY}` };
+  for (let i = 0; i < maxAttempts; i++) {
+    try {
+      const res = await fetch(`${url}/pool/health`, { headers, signal: AbortSignal.timeout(5000) });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.ready) return true;
+      }
+    } catch {}
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+  return false;
+}
+
+export async function provision(opts) {
+  const {
+    agentName,
+    instructions,
+    joinUrl,
+    channels = { email: true, sms: true, crypto: true },
+    model,
+    identityPreset,
+  } = opts;
+
   const instance = cache.findClaimable();
   if (!instance) return null;
 
@@ -29,12 +56,22 @@ export async function provision(agentName, instructions, joinUrl) {
       Authorization: `Bearer ${POOL_API_KEY}`,
     };
 
-    // Step 1: Write instructions via pool API (agnostic)
+    // Step 1: setVariables, redeploy, wait healthy
+    const vars = instanceEnvVarsForProvision({ channels, model, agentName });
+    const variables = Object.fromEntries(Object.entries(vars).map(([k, v]) => [k, String(v ?? "")]));
+    await railway.setVariables(instance.serviceId, variables);
+    console.log(`[provision] Set vars, triggering redeploy...`);
+    await railway.redeployService(instance.serviceId);
+    const healthy = await waitHealthy(instance.url);
+    if (!healthy) throw new Error(`Instance ${instance.id} did not become healthy after redeploy`);
+
+    // Step 2: Write instructions via pool API (identity preset prepended)
+    const fullInstructions = resolveIdentityPreset(identityPreset) + (instructions || "");
     const provisionRes = await fetch(`${instance.url}/pool/provision`, {
       method: "POST",
       headers,
       signal: AbortSignal.timeout(15_000),
-      body: JSON.stringify({ agentName, instructions }),
+      body: JSON.stringify({ instructions: fullInstructions }),
     });
     if (!provisionRes.ok) {
       const text = await provisionRes.text();

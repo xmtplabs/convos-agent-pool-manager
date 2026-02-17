@@ -121,6 +121,18 @@ export async function setVariables(serviceId, variables) {
   );
 }
 
+/** Trigger redeploy so updated vars take effect. */
+export async function redeployService(serviceId) {
+  const environmentId = process.env.RAILWAY_ENVIRONMENT_ID;
+  if (!environmentId) throw new Error("RAILWAY_ENVIRONMENT_ID not set");
+  await gql(
+    `mutation($serviceId: String!, $environmentId: String!) {
+      serviceInstanceDeploy(serviceId: $serviceId, environmentId: $environmentId, latestCommit: true)
+    }`,
+    { serviceId, environmentId }
+  );
+}
+
 export async function createDomain(serviceId) {
   const environmentId = process.env.RAILWAY_ENVIRONMENT_ID;
 
