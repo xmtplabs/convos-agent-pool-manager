@@ -31,8 +31,7 @@ function instanceEnvVars() {
     TELNYX_PHONE_NUMBER: process.env.INSTANCE_TELNYX_PHONE_NUMBER || "",
     TELNYX_MESSAGING_PROFILE_ID: process.env.INSTANCE_TELNYX_MESSAGING_PROFILE_ID || "",
     GATEWAY_AUTH_TOKEN: POOL_API_KEY,
-    OPENCLAW_STATE_DIR: "/data",
-    PORT: "8080",
+    OPENCLAW_STATE_DIR: "/data"
   };
 }
 
