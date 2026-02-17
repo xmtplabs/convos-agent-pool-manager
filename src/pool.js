@@ -8,7 +8,6 @@ import { ensureVolume, getServiceIdsWithVolumes } from "./volumes.js";
 const POOL_API_KEY = process.env.POOL_API_KEY;
 const MIN_IDLE = parseInt(process.env.POOL_MIN_IDLE || "3", 10);
 const MAX_TOTAL = parseInt(process.env.POOL_MAX_TOTAL || "10", 10);
-const SKIP_CREATE = process.env.POOL_SKIP_CREATE === "1" || process.env.POOL_SKIP_CREATE === "true";
 
 const IS_PRODUCTION = (process.env.POOL_ENVIRONMENT || "staging") === "production";
 
@@ -272,8 +271,6 @@ export async function tick() {
   console.log(
     `[tick] ${counts.idle} idle, ${counts.starting} starting, ${counts.claimed} claimed, ${counts.crashed || 0} crashed (total: ${total})`
   );
-
-  if (SKIP_CREATE) return;
 
   if (deficit > 0) {
     const canCreate = Math.min(deficit, MAX_TOTAL - total);
