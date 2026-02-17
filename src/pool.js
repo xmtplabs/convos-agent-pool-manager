@@ -4,7 +4,7 @@ import * as railway from "./railway.js";
 import * as cache from "./cache.js";
 import { deriveStatus } from "./status.js";
 import { ensureVolume, getServiceIdsWithVolumes } from "./volumes.js";
-import { instanceEnvVars, instanceEnvVarsForProvision, resolveOpenRouterApiKey } from "./keys.js";
+import { instanceEnvVars, instanceEnvVarsForProvision, resolveOpenRouterApiKey, generatePrivateWalletKey } from "./keys.js";
 
 const POOL_API_KEY = process.env.POOL_API_KEY;
 const MIN_IDLE = parseInt(process.env.POOL_MIN_IDLE || "3", 10);
@@ -50,6 +50,8 @@ export async function createInstance() {
   const vars = { ...instanceEnvVars() };
   const openRouterKey = await resolveOpenRouterApiKey(id);
   if (openRouterKey) vars.OPENROUTER_API_KEY = openRouterKey;
+  const privateWalletKey = generatePrivateWalletKey();
+  vars.PRIVATE_WALLET_KEY = privateWalletKey;
 
   const serviceId = await railway.createService(name, vars);
   console.log(`[pool]   Railway service created: ${serviceId}`);
@@ -72,6 +74,7 @@ export async function createInstance() {
     createdAt: new Date().toISOString(),
     deployStatus: "BUILDING",
     openRouterApiKey: openRouterKey || undefined,
+    privateWalletKey,
   });
 
   return { id, serviceId, url, name };
@@ -205,6 +208,7 @@ export async function tick() {
       deployStatus: svc.deployStatus,
     };
     if (existing?.openRouterApiKey) entry.openRouterApiKey = existing.openRouterApiKey;
+    if (existing?.privateWalletKey) entry.privateWalletKey = existing.privateWalletKey;
 
     // Enrich with metadata
     if (metadata) {

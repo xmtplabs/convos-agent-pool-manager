@@ -51,7 +51,12 @@ export async function provision(opts) {
 
     // Step 1: setVariables, redeploy, wait healthy
     const openRouterKey = instance.openRouterApiKey ?? (await resolveOpenRouterApiKey(instance.id));
-    const vars = instanceEnvVarsForProvision({ model, agentName, openRouterApiKey: openRouterKey });
+    const vars = instanceEnvVarsForProvision({
+      model,
+      agentName,
+      openRouterApiKey: openRouterKey,
+      privateWalletKey: instance.privateWalletKey,
+    });
     const variables = Object.fromEntries(Object.entries(vars).map(([k, v]) => [k, String(v ?? "")]));
     await railway.setVariables(instance.serviceId, variables);
     console.log(`[provision] Set vars, triggering redeploy...`);

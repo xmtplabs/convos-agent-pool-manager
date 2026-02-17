@@ -3,6 +3,8 @@
  * them to Railway services (warm-up and claim). Set these in the pool manager's .env.
  */
 
+import { randomBytes } from "crypto";
+
 const POOL_API_KEY = process.env.POOL_API_KEY;
 
 const INSTANCE_VAR_MAP = {
@@ -14,7 +16,6 @@ const INSTANCE_VAR_MAP = {
   AGENTMAIL_API_KEY: "INSTANCE_AGENTMAIL_API_KEY",
   AGENTMAIL_INBOX_ID: "INSTANCE_AGENTMAIL_INBOX_ID",
   BANKR_API_KEY: "INSTANCE_BANKR_API_KEY",
-  PRIVATE_WALLET_KEY: "INSTANCE_PRIVATE_WALLET_KEY",
   TELNYX_API_KEY: "INSTANCE_TELNYX_API_KEY",
   TELNYX_PHONE_NUMBER: "INSTANCE_TELNYX_PHONE_NUMBER",
   TELNYX_MESSAGING_PROFILE_ID: "INSTANCE_TELNYX_MESSAGING_PROFILE_ID",
@@ -39,7 +40,6 @@ export function instanceEnvVars() {
     AGENTMAIL_API_KEY: getEnv(INSTANCE_VAR_MAP.AGENTMAIL_API_KEY),
     AGENTMAIL_INBOX_ID: getEnv(INSTANCE_VAR_MAP.AGENTMAIL_INBOX_ID),
     BANKR_API_KEY: getEnv(INSTANCE_VAR_MAP.BANKR_API_KEY),
-    PRIVATE_WALLET_KEY: getEnv(INSTANCE_VAR_MAP.PRIVATE_WALLET_KEY),
     TELNYX_API_KEY: getEnv(INSTANCE_VAR_MAP.TELNYX_API_KEY),
     TELNYX_PHONE_NUMBER: getEnv(INSTANCE_VAR_MAP.TELNYX_PHONE_NUMBER),
     TELNYX_MESSAGING_PROFILE_ID: getEnv(INSTANCE_VAR_MAP.TELNYX_MESSAGING_PROFILE_ID),
@@ -49,11 +49,17 @@ export function instanceEnvVars() {
 
 /** Env vars for provision (claim time). All keys + model override + AGENT_NAME. */
 export function instanceEnvVarsForProvision(opts) {
-  const { model, agentName, openRouterApiKey } = opts;
+  const { model, agentName, openRouterApiKey, privateWalletKey } = opts;
   const base = { ...instanceEnvVars(), AGENT_NAME: agentName || "" };
   if (model) base.OPENCLAW_PRIMARY_MODEL = model;
   if (openRouterApiKey != null && openRouterApiKey !== "") base.OPENROUTER_API_KEY = openRouterApiKey;
+  if (privateWalletKey) base.PRIVATE_WALLET_KEY = privateWalletKey;
   return base;
+}
+
+/** Generate a random Ethereum wallet private key (0x + 64 hex chars). */
+export function generatePrivateWalletKey() {
+  return "0x" + randomBytes(32).toString("hex");
 }
 
 /** Resolve OPENROUTER_API_KEY. Priority: 1) INSTANCE_OPENROUTER_API_KEY if set (no create), 2) create via OPENROUTER_MANAGEMENT_KEY. */
