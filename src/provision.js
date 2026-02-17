@@ -34,13 +34,7 @@ async function waitHealthy(url, maxAttempts = 180, intervalMs = 2000) {
 }
 
 export async function provision(opts) {
-  const {
-    agentName,
-    instructions,
-    joinUrl,
-    channels = { email: true, sms: true, crypto: true },
-    model,
-  } = opts;
+  const { agentName, instructions, joinUrl, model } = opts;
 
   const instance = cache.findClaimable();
   if (!instance) return null;
@@ -55,7 +49,7 @@ export async function provision(opts) {
     };
 
     // Step 1: setVariables, redeploy, wait healthy
-    const vars = instanceEnvVarsForProvision({ channels, model, agentName });
+    const vars = instanceEnvVarsForProvision({ model, agentName });
     const variables = Object.fromEntries(Object.entries(vars).map(([k, v]) => [k, String(v ?? "")]));
     await railway.setVariables(instance.serviceId, variables);
     console.log(`[provision] Set vars, triggering redeploy...`);
