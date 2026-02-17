@@ -13,7 +13,13 @@ async function gql(query, variables = {}) {
     body: JSON.stringify({ query, variables }),
   });
 
-  const json = await res.json();
+  const text = await res.text();
+  let json;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    throw new Error(`Railway API returned non-JSON (${res.status}): ${text.slice(0, 120)}`);
+  }
   if (json.errors) {
     throw new Error(`Railway API error: ${JSON.stringify(json.errors)}`);
   }

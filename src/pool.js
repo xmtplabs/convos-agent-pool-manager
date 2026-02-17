@@ -10,6 +10,9 @@ const MAX_TOTAL = parseInt(process.env.POOL_MAX_TOTAL || "10", 10);
 
 const IS_PRODUCTION = (process.env.POOL_ENVIRONMENT || "staging") === "production";
 
+// Services that failed to delete — skip on future ticks to avoid retry loops
+const deleteFailures = new Set();
+
 function instanceEnvVars() {
   return {
     OPENCLAW_PRIMARY_MODEL: process.env.INSTANCE_OPENCLAW_PRIMARY_MODEL || "",
@@ -253,11 +256,13 @@ export async function tick() {
 
   // Delete dead services from Railway
   for (const svc of toDelete) {
+    if (deleteFailures.has(svc.id)) continue;
     try {
       await railway.deleteService(svc.id);
       console.log(`[tick] Deleted dead service ${svc.id} (${svc.name})`);
     } catch (err) {
       console.warn(`[tick] Failed to delete ${svc.id}: ${err.message}`);
+      deleteFailures.add(svc.id);
     }
   }
 
