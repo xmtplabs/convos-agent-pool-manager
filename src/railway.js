@@ -278,8 +278,8 @@ export async function getServiceIdsWithVolumes() {
 }
 
 export async function deleteService(serviceId) {
-  // Delete attached volumes first (Railway doesn't auto-delete them)
-  await deleteVolumesForService(serviceId);
+  // Find volume IDs before deleting the service
+  const volumeIds = await getVolumeIdsForService(serviceId);
 
   await gql(
     `mutation($id: String!) {
@@ -287,9 +287,19 @@ export async function deleteService(serviceId) {
     }`,
     { id: serviceId }
   );
+
+  // Delete orphaned volumes after service is gone
+  for (const volumeId of volumeIds) {
+    try {
+      await gql(`mutation($volumeId: String!) { volumeDelete(volumeId: $volumeId) }`, { volumeId });
+      console.log(`[railway] Deleted volume ${volumeId} (was attached to ${serviceId})`);
+    } catch (err) {
+      console.warn(`[railway] Failed to delete volume ${volumeId}: ${err.message}`);
+    }
+  }
 }
 
-async function deleteVolumesForService(serviceId) {
+async function getVolumeIdsForService(serviceId) {
   const projectId = process.env.RAILWAY_PROJECT_ID;
   try {
     const data = await gql(
@@ -307,18 +317,18 @@ async function deleteVolumesForService(serviceId) {
       }`,
       { id: projectId }
     );
+    const ids = [];
     for (const edge of data.project?.volumes?.edges || []) {
       const vol = edge.node;
       const attached = vol.volumeInstances?.edges?.some(
         (vi) => vi.node?.serviceId === serviceId
       );
-      if (attached) {
-        await gql(`mutation($volumeId: String!) { volumeDelete(volumeId: $volumeId) }`, { volumeId: vol.id });
-        console.log(`[railway] Deleted volume ${vol.id} for service ${serviceId}`);
-      }
+      if (attached) ids.push(vol.id);
     }
+    return ids;
   } catch (err) {
-    console.warn(`[railway] deleteVolumesForService(${serviceId}) failed: ${err.message}`);
+    console.warn(`[railway] getVolumeIdsForService(${serviceId}) failed: ${err.message}`);
+    return [];
   }
 }
 
