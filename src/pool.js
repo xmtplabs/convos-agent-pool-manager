@@ -107,6 +107,11 @@ export async function tick() {
   const metadataRows = await db.listAll();
   const metadataByServiceId = new Map(metadataRows.map((r) => [r.railway_service_id, r]));
 
+  // Debug: log deploy statuses for agent services
+  for (const svc of agentServices) {
+    console.log(`[tick:debug] ${svc.name} deployStatus=${svc.deployStatus} id=${svc.id}`);
+  }
+
   // Health-check all SUCCESS services in parallel
   const successServices = agentServices.filter((s) => s.deployStatus === "SUCCESS");
 
@@ -144,7 +149,10 @@ export async function tick() {
 
   const checks = await Promise.allSettled(
     toCheck.map(async (svc) => {
-      const result = await healthCheck(urlMap.get(svc.id));
+      const url = urlMap.get(svc.id);
+      console.log(`[tick:debug] Health-checking ${svc.name} at ${url}/pool/health`);
+      const result = await healthCheck(url);
+      console.log(`[tick:debug] Health result for ${svc.name}: ${JSON.stringify(result)}`);
       return { id: svc.id, result };
     })
   );
