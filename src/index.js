@@ -846,8 +846,9 @@ app.get("/", (_req, res) => {
       }
       var killId=e.target.getAttribute('data-kill');
       if(killId){
-        var a2=claimedCache.find(function(x){return x.id===killId;});
-        if(a2)killAgent(a2.id,a2.agentName||a2.id);
+        var card=document.getElementById('agent-'+killId);
+        var name=card?card.querySelector('.agent-name').textContent.trim():killId;
+        killAgent(killId,name);
         return;
       }
       var dismissId=e.target.getAttribute('data-dismiss');
