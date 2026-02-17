@@ -25,6 +25,13 @@ function instanceEnvVars() {
     CHROMIUM_PATH: "/usr/bin/chromium",
     GATEWAY_AUTH_TOKEN: POOL_API_KEY,
     OPENCLAW_STATE_DIR: "/data",
+    AGENTMAIL_API_KEY: "",
+    AGENTMAIL_INBOX_ID: "",
+    BANKR_API_KEY: "",
+    PRIVATE_WALLET_KEY: "",
+    TELNYX_API_KEY: "",
+    TELNYX_PHONE_NUMBER: "",
+    TELNYX_MESSAGING_PROFILE_ID: "",
   };
 }
 
