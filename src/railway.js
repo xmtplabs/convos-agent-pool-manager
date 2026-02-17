@@ -73,8 +73,7 @@ export async function createService(name, variables = {}) {
   // Step 3: Set resource limits (no repo connected, no auto-deploy).
   await setResourceLimits(serviceId);
 
-  // Step 4: Connect repo so the service knows which repo to build from.
-  // This may trigger an auto-deploy, but all config is already set.
+  // Step 4: Connect repo — triggers a single deploy with all config already set.
   const connectInput = { repo };
   if (branch) connectInput.branch = branch;
   try {
@@ -84,12 +83,12 @@ export async function createService(name, variables = {}) {
       }`,
       { id: serviceId, input: connectInput }
     );
-    console.log(`[railway]   Connected repo ${repo} (branch: ${branch || "default"})`);
+    console.log(`[railway]   Connected repo ${repo} (branch: ${branch || "default"}) — deploying`);
   } catch (err) {
     console.warn(`[railway] Failed to connect repo for ${serviceId}:`, err);
   }
 
-  // Step 5: Disconnect repo to stop auto-deploys from future pushes.
+  // Step 5: Disconnect repo to prevent auto-deploys from future pushes.
   try {
     await gql(
       `mutation($id: String!) { serviceDisconnect(id: $id) { id } }`,
@@ -98,53 +97,6 @@ export async function createService(name, variables = {}) {
     console.log(`[railway]   Disconnected repo (auto-deploys disabled)`);
   } catch (err) {
     console.warn(`[railway] Failed to disconnect repo for ${serviceId}:`, err);
-  }
-
-  // Step 6: Cancel any deployments that serviceConnect may have auto-triggered.
-  try {
-    const depData = await gql(
-      `query($id: String!) {
-        service(id: $id) {
-          deployments(first: 5) { edges { node { id status } } }
-        }
-      }`,
-      { id: serviceId }
-    );
-    const deployments = depData.service?.deployments?.edges || [];
-    for (const { node } of deployments) {
-      try {
-        await gql(
-          `mutation($id: String!) { deploymentCancel(id: $id) }`,
-          { id: node.id }
-        );
-        console.log(`[railway]   Cancelled deployment ${node.id} (status: ${node.status})`);
-      } catch (cancelErr) {
-        console.warn(`[railway]   Failed to cancel deployment ${node.id}:`, cancelErr);
-      }
-    }
-  } catch (err) {
-    console.warn(`[railway] Failed to query/cancel deployments for ${serviceId}:`, err);
-  }
-
-  // Step 7: Deploy the latest commit from the correct branch — single controlled deploy.
-  const deployRef = branch || "HEAD";
-  try {
-    const ghRes = await fetch(`https://api.github.com/repos/${repo}/commits/${deployRef}`, {
-      headers: { Accept: "application/vnd.github.v3+json" },
-      signal: AbortSignal.timeout(10000),
-    });
-    if (!ghRes.ok) throw new Error(`GitHub API ${ghRes.status}`);
-    const { sha } = await ghRes.json();
-
-    await gql(
-      `mutation($serviceId: String!, $environmentId: String!, $commitSha: String!) {
-        serviceInstanceDeploy(serviceId: $serviceId, environmentId: $environmentId, commitSha: $commitSha)
-      }`,
-      { serviceId, environmentId, commitSha: sha }
-    );
-    console.log(`[railway] Deployed ${repo}@${deployRef} (${sha.slice(0, 8)}) to ${serviceId}`);
-  } catch (err) {
-    console.warn(`[railway] Failed to deploy correct branch for ${serviceId}:`, err);
   }
 
   return serviceId;
