@@ -47,6 +47,14 @@ export async function createService(name, variables = {}) {
 
   const serviceId = data.serviceCreate.id;
 
+  // Override start command so agents run pool-server instead of default pnpm start
+  try {
+    await updateServiceInstance(serviceId, { startCommand: "node cli/pool-server.js" });
+    console.log(`[railway]   Set startCommand: node cli/pool-server.js`);
+  } catch (err) {
+    console.warn(`[railway] Failed to set startCommand for ${serviceId}:`, err);
+  }
+
   // Set rootDirectory for monorepo support (must be done via serviceInstanceUpdate,
   // not supported in ServiceCreateInput).
   const rootDir = process.env.RAILWAY_SOURCE_ROOT_DIR;
