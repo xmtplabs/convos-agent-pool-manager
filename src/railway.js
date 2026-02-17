@@ -313,7 +313,7 @@ async function deleteVolumesForService(serviceId) {
         (vi) => vi.node?.serviceId === serviceId
       );
       if (attached) {
-        await gql(`mutation($id: String!) { volumeDelete(id: $id) }`, { id: vol.id });
+        await gql(`mutation($volumeId: String!) { volumeDelete(volumeId: $volumeId) }`, { volumeId: vol.id });
         console.log(`[railway] Deleted volume ${vol.id} for service ${serviceId}`);
       }
     }
