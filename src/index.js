@@ -665,7 +665,7 @@ app.get("/", (_req, res) => {
         <div class="pool-stat crashed" id="s-crashed-wrap" style="display:none"><span class="dot"></span><span id="s-crashed">0</span> crashed</div>
       </div>
       <div class="pool-bar-right">
-        <input id="replenish-count" type="number" min="1" max="20" value="3" />
+        <input id="replenish-count" type="number" min="1" max="20" value="1" />
         <button class="pool-btn" id="replenish-btn">+ Add</button>
         <button class="pool-btn danger" id="drain-btn">Drain</button>
       </div>
