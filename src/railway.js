@@ -36,14 +36,9 @@ export async function createService(name, variables = {}) {
   const repo = process.env.RAILWAY_SOURCE_REPO;
   const branch = process.env.RAILWAY_SOURCE_BRANCH;
 
-  const input = {
-    projectId,
-    environmentId,
-    name,
-    source: { repo },
-    variables,
-  };
-  if (branch) input.branch = branch;
+  // Create service WITHOUT source to prevent auto-deploy.
+  // Connecting the repo happens later, after all config is set.
+  const input = { projectId, environmentId, name, variables };
 
   console.log(`[railway] createService: ${name}, branch=${branch || "(default)"}, env=${environmentId}`);
 
@@ -56,7 +51,45 @@ export async function createService(name, variables = {}) {
 
   const serviceId = data.serviceCreate.id;
 
-  // Step 1: Disconnect repo immediately so config changes don't trigger deploys.
+  // Step 1: Set startCommand (no repo connected, no auto-deploy).
+  try {
+    await updateServiceInstance(serviceId, { startCommand: "node cli/pool-server.js" });
+    console.log(`[railway]   Set startCommand: node cli/pool-server.js`);
+  } catch (err) {
+    console.warn(`[railway] Failed to set startCommand for ${serviceId}:`, err);
+  }
+
+  // Step 2: Set rootDirectory for monorepo support (no repo connected, no auto-deploy).
+  const rootDir = process.env.RAILWAY_SOURCE_ROOT_DIR;
+  if (rootDir) {
+    try {
+      await updateServiceInstance(serviceId, { rootDirectory: rootDir });
+      console.log(`[railway]   Set rootDirectory: ${rootDir}`);
+    } catch (err) {
+      console.warn(`[railway] Failed to set rootDirectory for ${serviceId}:`, err);
+    }
+  }
+
+  // Step 3: Set resource limits (no repo connected, no auto-deploy).
+  await setResourceLimits(serviceId);
+
+  // Step 4: Connect repo so the service knows which repo to build from.
+  // This may trigger an auto-deploy, but all config is already set.
+  const connectInput = { repo };
+  if (branch) connectInput.branch = branch;
+  try {
+    await gql(
+      `mutation($id: String!, $input: ServiceConnectInput!) {
+        serviceConnect(id: $id, input: $input) { id }
+      }`,
+      { id: serviceId, input: connectInput }
+    );
+    console.log(`[railway]   Connected repo ${repo} (branch: ${branch || "default"})`);
+  } catch (err) {
+    console.warn(`[railway] Failed to connect repo for ${serviceId}:`, err);
+  }
+
+  // Step 5: Disconnect repo to stop auto-deploys from future pushes.
   try {
     await gql(
       `mutation($id: String!) { serviceDisconnect(id: $id) { id } }`,
@@ -67,7 +100,7 @@ export async function createService(name, variables = {}) {
     console.warn(`[railway] Failed to disconnect repo for ${serviceId}:`, err);
   }
 
-  // Step 2: Cancel ALL in-progress deployments (serviceCreate may have triggered one).
+  // Step 6: Cancel any deployments that serviceConnect may have auto-triggered.
   try {
     const depData = await gql(
       `query($id: String!) {
@@ -93,29 +126,7 @@ export async function createService(name, variables = {}) {
     console.warn(`[railway] Failed to query/cancel deployments for ${serviceId}:`, err);
   }
 
-  // Step 3: Set startCommand (safe — repo disconnected, no auto-deploy).
-  try {
-    await updateServiceInstance(serviceId, { startCommand: "node cli/pool-server.js" });
-    console.log(`[railway]   Set startCommand: node cli/pool-server.js`);
-  } catch (err) {
-    console.warn(`[railway] Failed to set startCommand for ${serviceId}:`, err);
-  }
-
-  // Step 4: Set rootDirectory for monorepo support (safe — repo disconnected).
-  const rootDir = process.env.RAILWAY_SOURCE_ROOT_DIR;
-  if (rootDir) {
-    try {
-      await updateServiceInstance(serviceId, { rootDirectory: rootDir });
-      console.log(`[railway]   Set rootDirectory: ${rootDir}`);
-    } catch (err) {
-      console.warn(`[railway] Failed to set rootDirectory for ${serviceId}:`, err);
-    }
-  }
-
-  // Step 5: Set resource limits (safe — repo disconnected).
-  await setResourceLimits(serviceId);
-
-  // Step 6: Deploy the latest commit from the correct branch — single controlled deploy.
+  // Step 7: Deploy the latest commit from the correct branch — single controlled deploy.
   const deployRef = branch || "HEAD";
   try {
     const ghRes = await fetch(`https://api.github.com/repos/${repo}/commits/${deployRef}`, {
