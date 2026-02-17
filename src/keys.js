@@ -75,7 +75,7 @@ export async function createOpenRouterKey(instanceId) {
   const mgmtKey = process.env.OPENROUTER_MANAGEMENT_KEY;
   if (!mgmtKey) throw new Error("OPENROUTER_MANAGEMENT_KEY not set");
 
-  const name = `convos-${instanceId}-${Date.now()}`;
+  const name = `convos-agent-${instanceId}`;
   const limit = parseInt(process.env.OPENROUTER_KEY_LIMIT || "20", 10);
   const limitReset = process.env.OPENROUTER_KEY_LIMIT_RESET || "monthly";
 
