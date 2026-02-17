@@ -57,6 +57,21 @@ async function getServiceUrl(serviceId) {
   }
 }
 
+// Try to create a volume for a service. Returns true on success.
+async function ensureVolume(serviceId) {
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const vol = await railway.createVolume(serviceId, "/data");
+      console.log(`[pool]   Volume created: ${vol.id}`);
+      return true;
+    } catch (err) {
+      console.warn(`[pool]   Volume attempt ${attempt}/3 failed for ${serviceId}:`, err.message);
+      if (attempt < 3) await new Promise((r) => setTimeout(r, 2000));
+    }
+  }
+  return false;
+}
+
 // Create a single new Railway service (no DB write).
 export async function createInstance() {
   const id = nanoid(12);
@@ -67,17 +82,9 @@ export async function createInstance() {
   const serviceId = await railway.createService(name, instanceEnvVars());
   console.log(`[pool]   Railway service created: ${serviceId}`);
 
-  // Attach persistent volume for OpenClaw state (retry up to 3 times)
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    try {
-      const vol = await railway.createVolume(serviceId, "/data");
-      console.log(`[pool]   Volume created: ${vol.id}`);
-      break;
-    } catch (err) {
-      console.warn(`[pool]   Volume attempt ${attempt}/3 failed for ${serviceId}:`, err.message);
-      if (attempt < 3) await new Promise((r) => setTimeout(r, 2000));
-    }
-  }
+  // Attach persistent volume for OpenClaw state
+  const hasVolume = await ensureVolume(serviceId);
+  if (!hasVolume) console.warn(`[pool]   Volume creation failed for ${serviceId}, will retry in tick`);
 
   const domain = await railway.createDomain(serviceId);
   const url = `https://${domain}`;
@@ -251,6 +258,17 @@ export async function tick() {
       console.log(`[tick] Deleted dead service ${svc.id} (${svc.name})`);
     } catch (err) {
       console.warn(`[tick] Failed to delete ${svc.id}: ${err.message}`);
+    }
+  }
+
+  // Ensure all agent services have volumes
+  const volumeServiceIds = await railway.getServiceIdsWithVolumes();
+  if (volumeServiceIds) {
+    for (const svc of agentServices) {
+      if (!volumeServiceIds.has(svc.id) && svc.deployStatus === "SUCCESS") {
+        console.log(`[tick] Agent ${svc.name} missing volume, creating...`);
+        await ensureVolume(svc.id);
+      }
     }
   }
 

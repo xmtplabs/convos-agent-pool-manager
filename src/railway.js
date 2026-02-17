@@ -210,6 +210,38 @@ export async function createVolume(serviceId, mountPath = "/data") {
   return data.volumeCreate;
 }
 
+// Returns a Set of serviceIds that have volumes attached.
+export async function getServiceIdsWithVolumes() {
+  const projectId = process.env.RAILWAY_PROJECT_ID;
+  try {
+    const data = await gql(
+      `query($id: String!) {
+        project(id: $id) {
+          volumes {
+            edges {
+              node {
+                id
+                volumeInstances { edges { node { serviceId } } }
+              }
+            }
+          }
+        }
+      }`,
+      { id: projectId }
+    );
+    const ids = new Set();
+    for (const edge of data.project?.volumes?.edges || []) {
+      for (const vi of edge.node?.volumeInstances?.edges || []) {
+        if (vi.node?.serviceId) ids.add(vi.node.serviceId);
+      }
+    }
+    return ids;
+  } catch (err) {
+    console.warn(`[railway] getServiceIdsWithVolumes failed: ${err.message}`);
+    return null;
+  }
+}
+
 export async function deleteService(serviceId) {
   await gql(
     `mutation($id: String!) {
