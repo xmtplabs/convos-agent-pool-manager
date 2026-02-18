@@ -1,6 +1,6 @@
 const RAILWAY_API = "https://backboard.railway.com/graphql/v2";
 
-async function gql(query, variables = {}) {
+export async function gql(query, variables = {}) {
   const token = process.env.RAILWAY_API_TOKEN;
   if (!token) throw new Error("RAILWAY_API_TOKEN not set");
 
@@ -184,6 +184,21 @@ export async function updateServiceInstance(serviceId, settings = {}) {
     }`,
     { serviceId, environmentId, input: settings }
   );
+}
+
+export async function createVolume(serviceId, mountPath = "/data") {
+  const projectId = process.env.RAILWAY_PROJECT_ID;
+  const environmentId = process.env.RAILWAY_ENVIRONMENT_ID;
+
+  const data = await gql(
+    `mutation($input: VolumeCreateInput!) {
+      volumeCreate(input: $input) { id name }
+    }`,
+    {
+      input: { projectId, environmentId, serviceId, mountPath },
+    }
+  );
+  return data.volumeCreate;
 }
 
 export async function deleteService(serviceId) {

@@ -3,6 +3,7 @@ import * as db from "./db/pool.js";
 import * as railway from "./railway.js";
 import * as cache from "./cache.js";
 import { deriveStatus } from "./status.js";
+import { ensureVolume, fetchAllVolumesByService, deleteVolume } from "./volumes.js";
 
 const POOL_API_KEY = process.env.POOL_API_KEY;
 const MIN_IDLE = parseInt(process.env.POOL_MIN_IDLE || "3", 10);
@@ -54,6 +55,10 @@ export async function createInstance() {
 
   const serviceId = await railway.createService(name, instanceEnvVars());
   console.log(`[pool]   Railway service created: ${serviceId}`);
+
+  // Attach persistent volume for OpenClaw state
+  const hasVolume = await ensureVolume(serviceId);
+  if (!hasVolume) console.warn(`[pool]   Volume creation failed for ${serviceId}, will retry in tick`);
 
   const domain = await railway.createDomain(serviceId);
   const url = `https://${domain}`;
@@ -220,13 +225,28 @@ export async function tick() {
     }
   }
 
-  // Delete dead services from Railway
+  // Delete dead services — clean up volumes BEFORE deleting the service
+  const volumeMap = await fetchAllVolumesByService();
   for (const svc of toDelete) {
     try {
+      const volumeIds = volumeMap?.get(svc.id) || [];
+      for (const vid of volumeIds) {
+        await deleteVolume(vid, svc.id);
+      }
       await railway.deleteService(svc.id);
       console.log(`[tick] Deleted dead service ${svc.id} (${svc.name})`);
     } catch (err) {
       console.warn(`[tick] Failed to delete ${svc.id}: ${err.message}`);
+    }
+  }
+
+  // Ensure all agent services have volumes (self-healing for failed creates)
+  if (volumeMap) {
+    for (const svc of agentServices) {
+      if (!volumeMap.has(svc.id) && svc.deployStatus === "SUCCESS") {
+        console.log(`[tick] Agent ${svc.name} missing volume, creating...`);
+        await ensureVolume(svc.id);
+      }
     }
   }
 
@@ -357,8 +377,11 @@ export async function drainPool(count) {
   const idle = cache.getByStatus("idle").slice(0, count);
   console.log(`[pool] Draining ${idle.length} idle instance(s)...`);
   const results = [];
+  const vMap = await fetchAllVolumesByService();
   for (const inst of idle) {
     try {
+      const vols = vMap?.get(inst.serviceId) || [];
+      for (const vid of vols) await deleteVolume(vid, inst.serviceId);
       await railway.deleteService(inst.serviceId);
       cache.remove(inst.serviceId);
       results.push(inst.id);
@@ -377,6 +400,10 @@ export async function killInstance(id) {
 
   console.log(`[pool] Killing instance ${inst.id} (${inst.agentName || inst.name})`);
 
+  const vMap = await fetchAllVolumesByService();
+  const vols = vMap?.get(inst.serviceId) || [];
+  for (const vid of vols) await deleteVolume(vid, inst.serviceId);
+
   try {
     await railway.deleteService(inst.serviceId);
   } catch (err) {
@@ -393,6 +420,10 @@ export async function dismissCrashed(id) {
   if (!inst) throw new Error(`Crashed instance ${id} not found`);
 
   console.log(`[pool] Dismissing crashed ${inst.id} (${inst.agentName || inst.name})`);
+
+  const vMap = await fetchAllVolumesByService();
+  const vols = vMap?.get(inst.serviceId) || [];
+  for (const vid of vols) await deleteVolume(vid, inst.serviceId);
 
   try {
     await railway.deleteService(inst.serviceId);
