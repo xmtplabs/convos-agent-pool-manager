@@ -40,3 +40,14 @@ export async function deleteByServiceId(railwayServiceId) {
 export async function deleteById(id) {
   await sql`DELETE FROM agent_metadata WHERE id = ${id}`;
 }
+
+// Delete metadata rows for services that no longer exist on Railway.
+export async function deleteOrphaned(activeServiceIds) {
+  if (!activeServiceIds || activeServiceIds.length === 0) return;
+  const result = await sql`
+    DELETE FROM agent_metadata
+    WHERE railway_service_id != ALL(${activeServiceIds})
+  `;
+  const count = result.rowCount || 0;
+  if (count > 0) console.log(`[db] Cleaned ${count} orphaned metadata row(s)`);
+}

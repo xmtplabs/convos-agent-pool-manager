@@ -26,12 +26,12 @@ async function cleanupVolumes(serviceId, volumeMap) {
 export async function destroyInstance(inst) {
   await deleteOpenRouterKey(inst.openRouterKeyHash);
   const volumeMap = await fetchAllVolumesByService();
+  await cleanupVolumes(inst.serviceId, volumeMap);
   try {
     await railway.deleteService(inst.serviceId);
   } catch (err) {
     console.warn(`[delete] Failed to delete Railway service ${inst.serviceId}:`, err.message);
   }
-  await cleanupVolumes(inst.serviceId, volumeMap);
   cache.remove(inst.serviceId);
   await db.deleteByServiceId(inst.serviceId).catch(() => {});
 }
@@ -46,8 +46,8 @@ export async function destroyInstances(items) {
     if (deleteFailures.has(svc.id)) continue;
     try {
       await deleteOpenRouterKey(cached?.openRouterKeyHash);
-      await railway.deleteService(svc.id);
       await cleanupVolumes(svc.id, volumeMap);
+      await railway.deleteService(svc.id);
       console.log(`[delete] Deleted ${svc.id} (${svc.name})`);
     } catch (err) {
       console.warn(`[delete] Failed to delete ${svc.id}: ${err.message}`);

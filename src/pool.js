@@ -239,6 +239,11 @@ export async function tick() {
     }
   }
 
+  // Clean DB metadata for services that no longer exist on Railway
+  await db.deleteOrphaned([...railwayServiceIds]).catch((err) =>
+    console.warn(`[tick] deleteOrphaned failed: ${err.message}`)
+  );
+
   // Delete dead services + their volumes (single volume query for all)
   await destroyInstances(toDelete);
 

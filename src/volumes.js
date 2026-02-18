@@ -59,6 +59,32 @@ export async function fetchAllVolumesByService() {
   }
 }
 
+/** Delete ALL volumes in the project (one-time orphan cleanup at startup). */
+export async function deleteAllProjectVolumes() {
+  const projectId = process.env.RAILWAY_PROJECT_ID;
+  try {
+    const data = await gql(
+      `query($id: String!) {
+        project(id: $id) {
+          volumes { edges { node { id } } }
+        }
+      }`,
+      { id: projectId }
+    );
+    const edges = data.project?.volumes?.edges || [];
+    if (edges.length === 0) {
+      console.log(`[volumes] No orphan volumes found`);
+      return;
+    }
+    console.log(`[volumes] Deleting ${edges.length} orphan volume(s)...`);
+    for (const edge of edges) {
+      await deleteVolume(edge.node.id, "(orphan)");
+    }
+  } catch (err) {
+    console.warn(`[volumes] deleteAllProjectVolumes failed: ${err.message}`);
+  }
+}
+
 /** Delete a single volume by ID. Best-effort. */
 export async function deleteVolume(volumeId, serviceId) {
   try {
