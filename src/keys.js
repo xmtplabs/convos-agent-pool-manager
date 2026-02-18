@@ -9,7 +9,6 @@ const POOL_API_KEY = process.env.POOL_API_KEY;
 const INSTANCE_VAR_MAP = {
   OPENCLAW_PRIMARY_MODEL: "INSTANCE_OPENCLAW_PRIMARY_MODEL",
   OPENROUTER_API_KEY: "INSTANCE_OPENROUTER_API_KEY",
-  OPENCLAW_GATEWAY_TOKEN: "INSTANCE_OPENCLAW_GATEWAY_TOKEN",
   SETUP_PASSWORD: "INSTANCE_SETUP_PASSWORD",
   XMTP_ENV: "INSTANCE_XMTP_ENV",
   AGENTMAIL_API_KEY: "INSTANCE_AGENTMAIL_API_KEY",
@@ -25,9 +24,8 @@ function getEnv(name, fallback = "") {
   return val != null && val !== "" ? val : fallback;
 }
 
-/** Build env vars for instance (warm-up and claim). Omit OPENCLAW_GATEWAY_TOKEN and SETUP_PASSWORD when INSTANCE_* are unset so provision does not overwrite warmup-generated values. */
+/** Build env vars for instance (warm-up and claim). Omit SETUP_PASSWORD when INSTANCE_SETUP_PASSWORD is unset so provision does not overwrite warmup-generated values. */
 export function instanceEnvVars() {
-  const gatewayToken = getEnv(INSTANCE_VAR_MAP.OPENCLAW_GATEWAY_TOKEN);
   const setupPassword = getEnv(INSTANCE_VAR_MAP.SETUP_PASSWORD);
   const vars = {
     OPENCLAW_STATE_DIR: "/app",
@@ -43,14 +41,8 @@ export function instanceEnvVars() {
     TELNYX_PHONE_NUMBER: getEnv(INSTANCE_VAR_MAP.TELNYX_PHONE_NUMBER),
     TELNYX_MESSAGING_PROFILE_ID: getEnv(INSTANCE_VAR_MAP.TELNYX_MESSAGING_PROFILE_ID),
   };
-  if (gatewayToken) vars.OPENCLAW_GATEWAY_TOKEN = gatewayToken;
   if (setupPassword) vars.SETUP_PASSWORD = setupPassword;
   return vars;
-}
-
-/** Generate a random gateway token (64 hex chars, like openssl rand -hex 32). */
-export function generateGatewayToken() {
-  return randomBytes(32).toString("hex");
 }
 
 /** Generate a random setup password (32 hex chars, like openssl rand -hex 16). */
