@@ -26,13 +26,13 @@ function getEnv(name, fallback = "") {
   return val != null && val !== "" ? val : fallback;
 }
 
-/** Build env vars for instance (warm-up and claim). */
+/** Build env vars for instance (warm-up and claim). Omit OPENCLAW_GATEWAY_TOKEN and SETUP_PASSWORD when INSTANCE_* are unset so provision does not overwrite warmup-generated values. */
 export function instanceEnvVars() {
+  const gatewayToken = getEnv(INSTANCE_VAR_MAP.OPENCLAW_GATEWAY_TOKEN);
+  const setupPassword = getEnv(INSTANCE_VAR_MAP.SETUP_PASSWORD);
   const vars = {
     OPENCLAW_PRIMARY_MODEL: getEnv(INSTANCE_VAR_MAP.OPENCLAW_PRIMARY_MODEL),
     OPENROUTER_API_KEY: getEnv(INSTANCE_VAR_MAP.OPENROUTER_API_KEY),
-    OPENCLAW_GATEWAY_TOKEN: getEnv(INSTANCE_VAR_MAP.OPENCLAW_GATEWAY_TOKEN),
-    SETUP_PASSWORD: getEnv(INSTANCE_VAR_MAP.SETUP_PASSWORD),
     XMTP_ENV: getEnv(INSTANCE_VAR_MAP.XMTP_ENV, "dev"),
     CHROMIUM_PATH: "/usr/bin/chromium",
     GATEWAY_AUTH_TOKEN: POOL_API_KEY || "",
@@ -44,6 +44,8 @@ export function instanceEnvVars() {
     TELNYX_PHONE_NUMBER: getEnv(INSTANCE_VAR_MAP.TELNYX_PHONE_NUMBER),
     TELNYX_MESSAGING_PROFILE_ID: getEnv(INSTANCE_VAR_MAP.TELNYX_MESSAGING_PROFILE_ID),
   };
+  if (gatewayToken) vars.OPENCLAW_GATEWAY_TOKEN = gatewayToken;
+  if (setupPassword) vars.SETUP_PASSWORD = setupPassword;
   return vars;
 }
 
@@ -59,6 +61,16 @@ export function instanceEnvVarsForProvision(opts) {
   // Per-instance keys are set during warm-up and must not be clobbered.
   if (!base.OPENROUTER_API_KEY) delete base.OPENROUTER_API_KEY;
   return base;
+}
+
+/** Generate a random gateway token (64 hex chars, like openssl rand -hex 32). */
+export function generateGatewayToken() {
+  return randomBytes(32).toString("hex");
+}
+
+/** Generate a random setup password (32 hex chars, like openssl rand -hex 16). */
+export function generateSetupPassword() {
+  return randomBytes(16).toString("hex");
 }
 
 /** Generate a random Ethereum wallet private key (0x + 64 hex chars). */

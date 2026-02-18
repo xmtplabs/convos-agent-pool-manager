@@ -4,7 +4,7 @@ import * as railway from "./railway.js";
 import * as cache from "./cache.js";
 import { deriveStatus } from "./status.js";
 import { ensureVolume, getServiceIdsWithVolumes } from "./volumes.js";
-import { instanceEnvVars, instanceEnvVarsForProvision, resolveOpenRouterApiKey, generatePrivateWalletKey } from "./keys.js";
+import { instanceEnvVars, instanceEnvVarsForProvision, resolveOpenRouterApiKey, generatePrivateWalletKey, generateGatewayToken, generateSetupPassword } from "./keys.js";
 
 const POOL_API_KEY = process.env.POOL_API_KEY;
 const MIN_IDLE = parseInt(process.env.POOL_MIN_IDLE || "3", 10);
@@ -48,6 +48,8 @@ export async function createInstance() {
   console.log(`[pool] Creating instance ${name}...`);
 
   const vars = { ...instanceEnvVars() };
+  if (vars.OPENCLAW_GATEWAY_TOKEN === undefined) vars.OPENCLAW_GATEWAY_TOKEN = generateGatewayToken();
+  if (vars.SETUP_PASSWORD === undefined) vars.SETUP_PASSWORD = generateSetupPassword();
   const openRouterKey = await resolveOpenRouterApiKey(id);
   if (openRouterKey) vars.OPENROUTER_API_KEY = openRouterKey;
   const privateWalletKey = generatePrivateWalletKey();
