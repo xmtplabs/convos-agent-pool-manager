@@ -4,7 +4,7 @@ import * as railway from "./railway.js";
 import * as cache from "./cache.js";
 import { deriveStatus } from "./status.js";
 import { ensureVolume, getServiceIdsWithVolumes } from "./volumes.js";
-import { instanceEnvVars, instanceEnvVarsForProvision, resolveOpenRouterApiKey, generatePrivateWalletKey, generateGatewayToken, generateSetupPassword } from "./keys.js";
+import { instanceEnvVars, instanceEnvVarsForProvision, resolveOpenRouterApiKey, deleteOpenRouterKey, generatePrivateWalletKey, generateGatewayToken, generateSetupPassword } from "./keys.js";
 
 const POOL_API_KEY = process.env.POOL_API_KEY;
 const MIN_IDLE = parseInt(process.env.POOL_MIN_IDLE || "3", 10);
@@ -50,7 +50,7 @@ export async function createInstance() {
   const vars = { ...instanceEnvVars() };
   if (vars.OPENCLAW_GATEWAY_TOKEN === undefined) vars.OPENCLAW_GATEWAY_TOKEN = generateGatewayToken();
   if (vars.SETUP_PASSWORD === undefined) vars.SETUP_PASSWORD = generateSetupPassword();
-  const openRouterKey = await resolveOpenRouterApiKey(id);
+  const { key: openRouterKey, hash: openRouterKeyHash } = await resolveOpenRouterApiKey(id);
   if (openRouterKey) vars.OPENROUTER_API_KEY = openRouterKey;
   const privateWalletKey = generatePrivateWalletKey();
   vars.PRIVATE_WALLET_KEY = privateWalletKey;
@@ -76,6 +76,7 @@ export async function createInstance() {
     createdAt: new Date().toISOString(),
     deployStatus: "BUILDING",
     openRouterApiKey: openRouterKey || undefined,
+    openRouterKeyHash: openRouterKeyHash || undefined,
     privateWalletKey,
   });
 
@@ -199,8 +200,9 @@ export async function tick() {
         });
       } else {
         // Was idle/provisioning — delete silently
+        const cached = cache.get(svc.id);
+        toDelete.push({ svc, cached });
         cache.remove(svc.id);
-        toDelete.push(svc);
       }
       continue;
     }
@@ -217,6 +219,7 @@ export async function tick() {
       deployStatus: svc.deployStatus,
     };
     if (existing?.openRouterApiKey) entry.openRouterApiKey = existing.openRouterApiKey;
+    if (existing?.openRouterKeyHash) entry.openRouterKeyHash = existing.openRouterKeyHash;
     if (existing?.privateWalletKey) entry.privateWalletKey = existing.privateWalletKey;
 
     // Enrich with metadata
@@ -240,9 +243,10 @@ export async function tick() {
   }
 
   // Delete dead services from Railway
-  for (const svc of toDelete) {
+  for (const { svc, cached } of toDelete) {
     if (deleteFailures.has(svc.id)) continue;
     try {
+      await deleteOpenRouterKey(cached?.openRouterKeyHash);
       await railway.deleteService(svc.id);
       console.log(`[tick] Deleted dead service ${svc.id} (${svc.name})`);
     } catch (err) {
@@ -289,6 +293,18 @@ export async function tick() {
 // Provisioning flow lives in provision.js (convos-sdk setup/join orchestration).
 export { provision } from "./provision.js";
 
+// Shared cleanup: delete OpenRouter key, Railway service, cache entry, and DB row.
+async function destroyInstance(inst) {
+  await deleteOpenRouterKey(inst.openRouterKeyHash);
+  try {
+    await railway.deleteService(inst.serviceId);
+  } catch (err) {
+    console.warn(`[pool] Failed to delete Railway service ${inst.serviceId}:`, err.message);
+  }
+  cache.remove(inst.serviceId);
+  await db.deleteByServiceId(inst.serviceId).catch(() => {});
+}
+
 // Drain idle instances.
 export async function drainPool(count) {
   const idle = cache.getByStatus("idle").slice(0, count);
@@ -296,8 +312,7 @@ export async function drainPool(count) {
   const results = [];
   for (const inst of idle) {
     try {
-      await railway.deleteService(inst.serviceId);
-      cache.remove(inst.serviceId);
+      await destroyInstance(inst);
       results.push(inst.id);
       console.log(`[pool]   Drained ${inst.id}`);
     } catch (err) {
@@ -316,14 +331,7 @@ export async function killInstance(id) {
   cache.remove(inst.serviceId);
 
   console.log(`[pool] Killing instance ${inst.id} (${inst.agentName || inst.name})`);
-
-  try {
-    await railway.deleteService(inst.serviceId);
-  } catch (err) {
-    console.warn(`[pool] Failed to delete Railway service:`, err.message);
-  }
-
-  await db.deleteByServiceId(inst.serviceId).catch(() => {});
+  await destroyInstance(inst);
 }
 
 // Dismiss a crashed agent (user-initiated from dashboard).
@@ -332,14 +340,5 @@ export async function dismissCrashed(id) {
   if (!inst) throw new Error(`Crashed instance ${id} not found`);
 
   console.log(`[pool] Dismissing crashed ${inst.id} (${inst.agentName || inst.name})`);
-
-  try {
-    await railway.deleteService(inst.serviceId);
-  } catch (err) {
-    // Service might already be gone
-    console.warn(`[pool] Failed to delete Railway service:`, err.message);
-  }
-
-  cache.remove(inst.serviceId);
-  await db.deleteByServiceId(inst.serviceId).catch(() => {});
+  await destroyInstance(inst);
 }

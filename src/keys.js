@@ -78,11 +78,12 @@ export function generatePrivateWalletKey() {
   return "0x" + randomBytes(32).toString("hex");
 }
 
-/** Resolve OPENROUTER_API_KEY. Priority: 1) INSTANCE_OPENROUTER_API_KEY if set (no create), 2) create via OPENROUTER_MANAGEMENT_KEY. */
+/** Resolve OPENROUTER_API_KEY. Priority: 1) INSTANCE_OPENROUTER_API_KEY if set (no create), 2) create via OPENROUTER_MANAGEMENT_KEY.
+ *  Returns { key, hash } — hash is null for shared keys or when no key is available. */
 export async function resolveOpenRouterApiKey(instanceId) {
   const existing = getEnv(INSTANCE_VAR_MAP.OPENROUTER_API_KEY);
-  if (existing) return existing; // never create when shared key is configured
-  if (!process.env.OPENROUTER_MANAGEMENT_KEY) return "";
+  if (existing) return { key: existing, hash: null }; // never create when shared key is configured
+  if (!process.env.OPENROUTER_MANAGEMENT_KEY) return { key: "", hash: null };
   return createOpenRouterKey(instanceId);
 }
 
@@ -105,9 +106,32 @@ export async function createOpenRouterKey(instanceId) {
   });
   const body = await res.json();
   const key = body?.key;
+  const hash = body?.data?.hash ?? null;
   if (!key) {
     console.error("[keys] OpenRouter create key failed:", res.status, body);
     throw new Error(`OpenRouter key creation failed: ${res.status}`);
   }
-  return key;
+  console.log(`[keys] Created OpenRouter key for ${name} (hash=${hash})`);
+  return { key, hash };
+}
+
+/** Delete an OpenRouter API key by hash. Best-effort — logs and swallows errors. */
+export async function deleteOpenRouterKey(hash) {
+  const mgmtKey = process.env.OPENROUTER_MANAGEMENT_KEY;
+  if (!mgmtKey || !hash) return;
+
+  try {
+    const res = await fetch(`https://openrouter.ai/api/v1/keys/${hash}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${mgmtKey}` },
+    });
+    if (res.ok) {
+      console.log(`[keys] Deleted OpenRouter key (hash=${hash})`);
+    } else {
+      const body = await res.text();
+      console.warn(`[keys] Failed to delete OpenRouter key (hash=${hash}): ${res.status} ${body}`);
+    }
+  } catch (err) {
+    console.warn(`[keys] Failed to delete OpenRouter key (hash=${hash}):`, err.message);
+  }
 }
