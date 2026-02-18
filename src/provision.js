@@ -2,9 +2,12 @@
  * Provisioning: claim an idle instance and set up convos identity + conversation.
  *
  * Flow:
- *   1. If model override: POST /pool/restart-gateway (fast restart, no full redeploy)
+ *   1. If model override: POST /pool/restart-gateway (writes env to volume, restarts gateway)
  *   2. POST /pool/provision — write AGENTS.md + invite/join convos
- *   3. setVariables to Railway (fire-and-forget, for record-keeping only)
+ *   3. Rename Railway service for dashboard visibility
+ *
+ * No Railway setVariables — env overrides are written to the persistent volume
+ * via the pool-server, avoiding Railway auto-redeploys entirely.
  *
  * The pool-server handles the full convos flow (invite or join) internally,
  * using the channel client's auto-created identity (persisted in state-dir).
@@ -15,7 +18,6 @@
 import * as db from "./db/pool.js";
 import * as railway from "./railway.js";
 import * as cache from "./cache.js";
-import { instanceEnvVarsForProvision } from "./pool.js";
 
 const POOL_API_KEY = process.env.POOL_API_KEY;
 
@@ -88,17 +90,6 @@ export async function provision(opts) {
       conversationId: result.conversationId,
       inviteUrl: result.inviteUrl || joinUrl || null,
       instructions,
-    });
-
-    // Step 4: Write vars to Railway for record-keeping (fire-and-forget)
-    const vars = instanceEnvVarsForProvision({
-      model,
-      agentName,
-      privateWalletKey: instance.privateWalletKey,
-    });
-    const variables = Object.fromEntries(Object.entries(vars).map(([k, v]) => [k, String(v ?? "")]));
-    railway.setVariables(instance.serviceId, variables).catch((err) => {
-      console.warn(`[provision] Background setVariables failed for ${instance.id}:`, err.message);
     });
 
     // Update cache
