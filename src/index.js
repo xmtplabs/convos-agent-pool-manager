@@ -40,7 +40,6 @@ app.get("/api/pool/agents", (_req, res) => {
   res.json({ claimed, crashed });
 });
 
-
 // Kill a launched instance
 app.delete("/api/pool/instances/:id", requireAuth, async (req, res) => {
   try {

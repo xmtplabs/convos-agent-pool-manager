@@ -6,7 +6,6 @@
 import { randomBytes } from "crypto";
 
 const POOL_API_KEY = process.env.POOL_API_KEY;
-// hi
 const INSTANCE_VAR_MAP = {
   OPENCLAW_PRIMARY_MODEL: "INSTANCE_OPENCLAW_PRIMARY_MODEL",
   OPENROUTER_API_KEY: "INSTANCE_OPENROUTER_API_KEY",
@@ -48,7 +47,6 @@ export function instanceEnvVars() {
   if (setupPassword) vars.SETUP_PASSWORD = setupPassword;
   return vars;
 }
-
 
 /** Generate a random gateway token (64 hex chars, like openssl rand -hex 32). */
 export function generateGatewayToken() {

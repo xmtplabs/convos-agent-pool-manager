@@ -13,7 +13,6 @@ const MAX_TOTAL = parseInt(process.env.POOL_MAX_TOTAL || "10", 10);
 // Services that failed to delete — skip on future ticks to avoid retry loops
 const deleteFailures = new Set();
 
-
 // Health-check a single instance via /pool/health.
 // Returns parsed JSON on success, null on failure.
 async function healthCheck(url) {
