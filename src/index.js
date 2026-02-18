@@ -282,6 +282,9 @@ app.get("/", (_req, res) => {
     .setting-input::placeholder { color: #B2B2B2; }
     textarea.setting-input { resize: vertical; min-height: 80px; }
 
+    .channel-checkboxes { display: flex; gap: 20px; flex-wrap: wrap; }
+    .channel-option { display: flex; align-items: center; gap: 8px; font-size: 14px; color: #333; cursor: pointer; }
+
     .btn-primary {
       background: #FC4F37;
       color: #FFF;
@@ -702,6 +705,14 @@ app.get("/", (_req, res) => {
           <div class="setting-group">
             <label class="setting-label" for="name">Name</label>
             <input id="name" name="name" class="setting-input" placeholder="e.g. Tokyo Trip" required />
+          </div>
+          <div class="setting-group">
+            <label class="setting-label">Channels</label>
+            <div class="channel-checkboxes">
+              <label class="channel-option"><input type="checkbox" name="channel-email" checked /> Email</label>
+              <label class="channel-option"><input type="checkbox" name="channel-crypto" checked /> Crypto</label>
+              <label class="channel-option"><input type="checkbox" name="channel-sms" checked /> SMS</label>
+            </div>
           </div>
           <div class="setting-group">
             <label class="setting-label" for="model">Model</label>
