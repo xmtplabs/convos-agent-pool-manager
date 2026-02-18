@@ -3,15 +3,13 @@ import * as db from "./db/pool.js";
 import * as railway from "./railway.js";
 import * as cache from "./cache.js";
 import { deriveStatus } from "./status.js";
-import { ensureVolume, getServiceIdsWithVolumes } from "./volumes.js";
-import { instanceEnvVars, resolveOpenRouterApiKey, deleteOpenRouterKey, generatePrivateWalletKey, generateGatewayToken, generateSetupPassword } from "./keys.js";
+import { ensureVolume, fetchAllVolumesByService } from "./volumes.js";
+import { instanceEnvVars, resolveOpenRouterApiKey, generatePrivateWalletKey, generateGatewayToken, generateSetupPassword } from "./keys.js";
+import { destroyInstance, destroyInstances } from "./delete.js";
 
 const POOL_API_KEY = process.env.POOL_API_KEY;
 const MIN_IDLE = parseInt(process.env.POOL_MIN_IDLE || "3", 10);
 const MAX_TOTAL = parseInt(process.env.POOL_MAX_TOTAL || "10", 10);
-
-// Services that failed to delete — skip on future ticks to avoid retry loops
-const deleteFailures = new Set();
 
 // Health-check a single instance via /pool/health.
 // Returns parsed JSON on success, null on failure.
@@ -240,24 +238,14 @@ export async function tick() {
     }
   }
 
-  // Delete dead services from Railway
-  for (const { svc, cached } of toDelete) {
-    if (deleteFailures.has(svc.id)) continue;
-    try {
-      await deleteOpenRouterKey(cached?.openRouterKeyHash);
-      await railway.deleteService(svc.id);
-      console.log(`[tick] Deleted dead service ${svc.id} (${svc.name})`);
-    } catch (err) {
-      console.warn(`[tick] Failed to delete ${svc.id}: ${err.message}`);
-      deleteFailures.add(svc.id);
-    }
-  }
+  // Delete dead services + their volumes (single volume query for all)
+  await destroyInstances(toDelete);
 
   // Ensure all agent services have volumes
-  const volumeServiceIds = await getServiceIdsWithVolumes();
-  if (volumeServiceIds) {
+  const volumeMap = await fetchAllVolumesByService();
+  if (volumeMap) {
     for (const svc of agentServices) {
-      if (!volumeServiceIds.has(svc.id) && svc.deployStatus === "SUCCESS") {
+      if (!volumeMap.has(svc.id) && svc.deployStatus === "SUCCESS") {
         console.log(`[tick] Agent ${svc.name} missing volume, creating...`);
         await ensureVolume(svc.id);
       }
@@ -290,18 +278,6 @@ export async function tick() {
 
 // Provisioning flow lives in provision.js (convos-sdk setup/join orchestration).
 export { provision } from "./provision.js";
-
-// Shared cleanup: delete OpenRouter key, Railway service, cache entry, and DB row.
-async function destroyInstance(inst) {
-  await deleteOpenRouterKey(inst.openRouterKeyHash);
-  try {
-    await railway.deleteService(inst.serviceId);
-  } catch (err) {
-    console.warn(`[pool] Failed to delete Railway service ${inst.serviceId}:`, err.message);
-  }
-  cache.remove(inst.serviceId);
-  await db.deleteByServiceId(inst.serviceId).catch(() => {});
-}
 
 // Drain idle instances.
 export async function drainPool(count) {

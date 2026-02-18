@@ -1,5 +1,4 @@
 import { setResourceLimits } from "./resources.js";
-import { getVolumeIdsForService, deleteVolumes } from "./volumes.js";
 
 const RAILWAY_API = "https://backboard.railway.com/graphql/v2";
 
@@ -154,18 +153,12 @@ export async function createVolume(serviceId, mountPath = "/data") {
 }
 
 export async function deleteService(serviceId) {
-  // Collect volume IDs before deleting (volumes.js)
-  const volumeIds = await getVolumeIdsForService(serviceId);
-
   await gql(
     `mutation($id: String!) {
       serviceDelete(id: $id)
     }`,
     { id: serviceId }
   );
-
-  // Clean up orphaned volumes (volumes.js)
-  await deleteVolumes(volumeIds, serviceId);
 }
 
 // List all services in the project with environment info and deploy status.
