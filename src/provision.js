@@ -3,10 +3,10 @@
  *
  * Flow:
  *   1. setVariables (channels, model, name) → redeploy → wait healthy
- *   2. POST /pool/provision — write AGENTS.md (instructions with identity preset)
- *   3. POST /convos-sdk/setup — create XMTP identity + conversation
- *   4. POST /convos-sdk/setup/complete — persist config to disk
- *   5. POST /convos-sdk/join — (optional) join existing conversation
+ *   2. POST /pool/provision — write AGENTS.md + invite/join convos
+ *
+ * The pool-server handles the full convos flow (invite or join) internally,
+ * using the channel client's auto-created identity (persisted in state-dir).
  *
  * To disable convos provisioning, comment out the import in pool.js.
  */
@@ -63,77 +63,18 @@ export async function provision(opts) {
     const healthy = await waitHealthy(instance.url);
     if (!healthy) throw new Error(`Instance ${instance.id} did not become healthy after redeploy`);
 
-    // Step 2: Write instructions via pool API
+    // Step 2: Write instructions + invite/join convos via pool API
     const provisionRes = await fetch(`${instance.url}/pool/provision`, {
       method: "POST",
       headers,
-      signal: AbortSignal.timeout(15_000),
-      body: JSON.stringify({ agentName, instructions: instructions || "" }),
+      signal: AbortSignal.timeout(60_000),
+      body: JSON.stringify({ agentName, instructions: instructions || "", joinUrl }),
     });
     if (!provisionRes.ok) {
       const text = await provisionRes.text();
       throw new Error(`Provision failed on ${instance.id}: ${provisionRes.status} ${text}`);
     }
-
-    // Step 2: Create identity + conversation via convos-sdk (proxied through pool-server)
-    const setupRes = await fetch(`${instance.url}/convos-sdk/setup`, {
-      method: "POST",
-      headers,
-      signal: AbortSignal.timeout(60_000),
-      body: JSON.stringify({
-        name: agentName,
-        env: process.env.INSTANCE_XMTP_ENV || "dev",
-      }),
-    });
-    if (!setupRes.ok) {
-      const text = await setupRes.text();
-      throw new Error(`Setup failed on ${instance.id}: ${setupRes.status} ${text}`);
-    }
-    const setupResult = await setupRes.json();
-
-    // Step 3: Save config to disk
-    const completeRes = await fetch(`${instance.url}/convos-sdk/setup/complete`, {
-      method: "POST",
-      headers,
-      signal: AbortSignal.timeout(15_000),
-    });
-    if (!completeRes.ok) {
-      const text = await completeRes.text();
-      throw new Error(`Setup complete failed on ${instance.id}: ${completeRes.status} ${text}`);
-    }
-
-    let result = {
-      conversationId: setupResult.conversationId,
-      inviteUrl: setupResult.inviteUrl || null,
-      joined: false,
-    };
-
-    // Step 4 (optional): Join existing conversation
-    // setup/complete triggers a config hot reload that restarts the channel.
-    // Wait for the agent to be healthy again before joining so the channel
-    // client is ready (avoids DB lock contention from one-off clients).
-    if (joinUrl) {
-      const healthyAfterSetup = await waitHealthy(instance.url, 30, 1000);
-      if (!healthyAfterSetup) {
-        throw new Error(`Instance ${instance.id} did not become healthy after setup/complete`);
-      }
-      const joinRes = await fetch(`${instance.url}/convos-sdk/join`, {
-        method: "POST",
-        headers,
-        signal: AbortSignal.timeout(30_000),
-        body: JSON.stringify({ invite: joinUrl }),
-      });
-      if (!joinRes.ok) {
-        const text = await joinRes.text();
-        throw new Error(`Join failed on ${instance.id}: ${joinRes.status} ${text}`);
-      }
-      const joinResult = await joinRes.json();
-      result = {
-        conversationId: joinResult.conversationId || result.conversationId,
-        inviteUrl: joinUrl,
-        joined: true,
-      };
-    }
+    const result = await provisionRes.json();
 
     // Insert metadata row
     await db.insertMetadata({
