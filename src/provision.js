@@ -2,12 +2,8 @@
  * Provisioning: claim an idle instance and set up convos identity + conversation.
  *
  * Flow:
- *   1. If model override: POST /pool/restart-gateway (writes env to volume, restarts gateway)
- *   2. POST /pool/provision — write AGENTS.md + invite/join convos
- *   3. Rename Railway service for dashboard visibility
- *
- * No Railway setVariables — env overrides are written to the persistent volume
- * via the pool-server, avoiding Railway auto-redeploys entirely.
+ *   1. POST /pool/provision — write AGENTS.md + invite/join convos
+ *   2. Rename Railway service for dashboard visibility
  *
  * The pool-server handles the full convos flow (invite or join) internally,
  * using the channel client's auto-created identity (persisted in state-dir).
@@ -21,23 +17,8 @@ import * as cache from "./cache.js";
 
 const POOL_API_KEY = process.env.POOL_API_KEY;
 
-async function waitHealthy(url, maxAttempts = 180, intervalMs = 2000) {
-  const headers = { Authorization: `Bearer ${POOL_API_KEY}` };
-  for (let i = 0; i < maxAttempts; i++) {
-    try {
-      const res = await fetch(`${url}/pool/health`, { headers, signal: AbortSignal.timeout(5000) });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.ready) return true;
-      }
-    } catch {}
-    await new Promise((r) => setTimeout(r, intervalMs));
-  }
-  return false;
-}
-
 export async function provision(opts) {
-  const { agentName, instructions, joinUrl, model } = opts;
+  const { agentName, instructions, joinUrl } = opts;
 
   const instance = cache.findClaimable();
   if (!instance) return null;
@@ -51,25 +32,7 @@ export async function provision(opts) {
       Authorization: `Bearer ${POOL_API_KEY}`,
     };
 
-    // Step 1: If model override, restart gateway (fast — skips full redeploy)
-    if (model) {
-      console.log(`[provision] Restarting gateway with model=${model}...`);
-      const restartRes = await fetch(`${instance.url}/pool/restart-gateway`, {
-        method: "POST",
-        headers,
-        signal: AbortSignal.timeout(180_000),
-        body: JSON.stringify({ env: { OPENCLAW_PRIMARY_MODEL: model } }),
-      });
-      if (!restartRes.ok) {
-        const text = await restartRes.text();
-        throw new Error(`restart-gateway failed on ${instance.id}: ${restartRes.status} ${text}`);
-      }
-      console.log(`[provision] Gateway restarted, waiting healthy...`);
-      const healthy = await waitHealthy(instance.url);
-      if (!healthy) throw new Error(`Instance ${instance.id} did not become healthy after restart`);
-    }
-
-    // Step 2: Write instructions + invite/join convos via pool API
+    // Write instructions + invite/join convos via pool API
     const provisionRes = await fetch(`${instance.url}/pool/provision`, {
       method: "POST",
       headers,

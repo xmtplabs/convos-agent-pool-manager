@@ -4,7 +4,7 @@ import * as railway from "./railway.js";
 import * as cache from "./cache.js";
 import { deriveStatus } from "./status.js";
 import { ensureVolume, getServiceIdsWithVolumes } from "./volumes.js";
-import { instanceEnvVars, instanceEnvVarsForProvision, resolveOpenRouterApiKey, deleteOpenRouterKey, generatePrivateWalletKey, generateGatewayToken, generateSetupPassword } from "./keys.js";
+import { instanceEnvVars, resolveOpenRouterApiKey, deleteOpenRouterKey, generatePrivateWalletKey, generateGatewayToken, generateSetupPassword } from "./keys.js";
 
 const POOL_API_KEY = process.env.POOL_API_KEY;
 const MIN_IDLE = parseInt(process.env.POOL_MIN_IDLE || "3", 10);
@@ -13,7 +13,6 @@ const MAX_TOTAL = parseInt(process.env.POOL_MAX_TOTAL || "10", 10);
 // Services that failed to delete — skip on future ticks to avoid retry loops
 const deleteFailures = new Set();
 
-export { instanceEnvVarsForProvision };
 
 // Health-check a single instance via /pool/health.
 // Returns parsed JSON on success, null on failure.

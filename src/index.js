@@ -1,7 +1,6 @@
 import express from "express";
 import * as pool from "./pool.js";
 import * as cache from "./cache.js";
-import { OPENROUTER_MODELS } from "./options.js";
 
 const PORT = parseInt(process.env.PORT || "3001", 10);
 const POOL_API_KEY = process.env.POOL_API_KEY;
@@ -41,10 +40,6 @@ app.get("/api/pool/agents", (_req, res) => {
   res.json({ claimed, crashed });
 });
 
-// Options for form (models)
-app.get("/api/pool/options", (_req, res) => {
-  res.json({ models: OPENROUTER_MODELS });
-});
 
 // Kill a launched instance
 app.delete("/api/pool/instances/:id", requireAuth, async (req, res) => {
@@ -715,12 +710,6 @@ app.get("/", (_req, res) => {
             </div>
           </div>
           <div class="setting-group">
-            <label class="setting-label" for="model">Model</label>
-            <select id="model" name="model" class="setting-input">
-              ${OPENROUTER_MODELS.map((m) => `<option value="${m.id}">${m.name}</option>`).join("")}
-            </select>
-          </div>
-          <div class="setting-group">
             <label class="setting-label" for="instructions">Instructions</label>
             <textarea id="instructions" name="instructions" class="setting-input" placeholder="You are a helpful trip planner for Tokyo..." required></textarea>
           </div>
@@ -969,7 +958,7 @@ app.get("/", (_req, res) => {
     f.onsubmit=async function(e){
       e.preventDefault();
       var agentName=f.name.value.trim();
-      var payload={agentName:agentName,instructions:f.instructions.value.trim(),model:f.model.value||undefined};
+      var payload={agentName:agentName,instructions:f.instructions.value.trim()};
       launching=true;btn.disabled=true;btn.textContent='Launching...';
       errorEl.style.display='none';successEl.classList.remove('active');
       try{
@@ -1048,7 +1037,7 @@ app.get("/api/pool/status", requireAuth, (_req, res) => {
 
 // Launch an agent — claim an idle instance and provision it with instructions.
 app.post("/api/pool/claim", requireAuth, async (req, res) => {
-  const { agentName, instructions, joinUrl, model } = req.body || {};
+  const { agentName, instructions, joinUrl } = req.body || {};
   if (!instructions || typeof instructions !== "string") {
     return res.status(400).json({ error: "instructions (string) is required" });
   }
@@ -1070,7 +1059,6 @@ app.post("/api/pool/claim", requireAuth, async (req, res) => {
       agentName,
       instructions,
       joinUrl: joinUrl || undefined,
-      model: model && typeof model === "string" ? model : undefined,
     });
     if (!result) {
       return res.status(503).json({
