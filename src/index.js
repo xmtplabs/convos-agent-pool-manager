@@ -761,7 +761,13 @@ app.get("/", (_req, res) => {
   <script>
     const API_KEY='${POOL_API_KEY}';
     const POOL_ENV='${POOL_ENVIRONMENT}';
+    const RAILWAY_PROJECT='${process.env.RAILWAY_PROJECT_ID || ""}';
+    const RAILWAY_ENV='${process.env.RAILWAY_ENVIRONMENT_ID || ""}';
     const authHeaders={'Authorization':'Bearer '+API_KEY,'Content-Type':'application/json'};
+    function railwayUrl(serviceId){
+      if(!RAILWAY_PROJECT||!serviceId)return null;
+      return 'https://railway.com/project/'+RAILWAY_PROJECT+'/service/'+serviceId+(RAILWAY_ENV?'?environmentId='+RAILWAY_ENV:'');
+    }
 
     function copyText(el){
       navigator.clipboard.writeText(el.textContent.trim()).then(function(){
@@ -830,11 +836,14 @@ app.get("/", (_req, res) => {
       crashedCache.forEach(function(a){
         var name=esc(a.agentName||a.id);
         var instr=esc(a.instructions||'No instructions');
+        var rUrl=railwayUrl(a.serviceId);
+        var idLine='<div style="font-size:11px;color:#999;margin-bottom:8px;font-family:monospace">'+esc(a.id)+(rUrl?' · <a href="'+rUrl+'" target="_blank" rel="noopener" style="color:#007AFF;text-decoration:none">Railway</a>':'')+'</div>';
         html+='<div class="agent-card crashed" id="agent-'+a.id+'">'+
           '<div class="agent-header">'+
             '<span class="agent-name">'+name+' <span class="agent-status-badge">Crashed</span></span>'+
             '<span class="agent-uptime">'+timeAgo(a.claimedAt)+'</span>'+
           '</div>'+
+          idLine+
           '<div class="agent-instructions">'+instr+'</div>'+
           '<div class="agent-actions">'+
             '<button class="btn-secondary" data-qr="'+a.id+'">Show QR</button>'+
@@ -846,11 +855,14 @@ app.get("/", (_req, res) => {
       claimedCache.forEach(function(a){
         var name=esc(a.agentName||a.id);
         var instr=esc(a.instructions||'No instructions');
+        var rUrl=railwayUrl(a.serviceId);
+        var idLine='<div style="font-size:11px;color:#999;margin-bottom:8px;font-family:monospace">'+esc(a.id)+(rUrl?' · <a href="'+rUrl+'" target="_blank" rel="noopener" style="color:#007AFF;text-decoration:none">Railway</a>':'')+'</div>';
         html+='<div class="agent-card" id="agent-'+a.id+'">'+
           '<div class="agent-header">'+
             '<span class="agent-name">'+name+'</span>'+
             '<span class="agent-uptime">'+timeAgo(a.claimedAt)+'</span>'+
           '</div>'+
+          idLine+
           '<div class="agent-instructions">'+instr+'</div>'+
           '<div class="agent-actions">'+
             '<button class="btn-secondary" data-qr="'+a.id+'">Show QR</button>'+

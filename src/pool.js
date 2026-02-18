@@ -48,9 +48,8 @@ export async function createInstance() {
   console.log(`[pool] Creating instance ${name}...`);
 
   const vars = { ...instanceEnvVars() };
-  // Don't create per-instance OpenRouter keys during warm-up — idle instances
-  // don't need LLM access. Keys are created at provision time instead, which
-  // avoids duplicates when the pool manager restarts and loses the in-memory cache.
+  const openRouterKey = await resolveOpenRouterApiKey(id);
+  if (openRouterKey) vars.OPENROUTER_API_KEY = openRouterKey;
   const privateWalletKey = generatePrivateWalletKey();
   vars.PRIVATE_WALLET_KEY = privateWalletKey;
 
@@ -74,6 +73,7 @@ export async function createInstance() {
     status: "starting",
     createdAt: new Date().toISOString(),
     deployStatus: "BUILDING",
+    openRouterApiKey: openRouterKey || undefined,
     privateWalletKey,
   });
 

@@ -47,13 +47,17 @@ export function instanceEnvVars() {
   return vars;
 }
 
-/** Env vars for provision (claim time). All keys + model override + AGENT_NAME. */
+/** Env vars for provision (claim time). All keys + model override + AGENT_NAME.
+ *  OPENROUTER_API_KEY is omitted unless a shared key (INSTANCE_OPENROUTER_API_KEY)
+ *  is configured — the instance already has its per-instance key from warm-up. */
 export function instanceEnvVarsForProvision(opts) {
-  const { model, agentName, openRouterApiKey, privateWalletKey } = opts;
+  const { model, agentName, privateWalletKey } = opts;
   const base = { ...instanceEnvVars(), AGENT_NAME: agentName || "" };
   if (model) base.OPENCLAW_PRIMARY_MODEL = model;
-  if (openRouterApiKey != null && openRouterApiKey !== "") base.OPENROUTER_API_KEY = openRouterApiKey;
   if (privateWalletKey) base.PRIVATE_WALLET_KEY = privateWalletKey;
+  // Don't overwrite OPENROUTER_API_KEY unless a shared key is explicitly configured.
+  // Per-instance keys are set during warm-up and must not be clobbered.
+  if (!base.OPENROUTER_API_KEY) delete base.OPENROUTER_API_KEY;
   return base;
 }
 
